@@ -280,6 +280,25 @@ def time_of(conn, cfg, key, start=0.0, end=None):
     return secs, sorted(rows, key=lambda r: r["first_ts"] or 0)
 
 
+def ticket_url(conn, row):
+    """Where a task's ticket lives: its own url, else the project's ticket address."""
+    if row["url"]:
+        return row["url"]
+    proj = project(conn, row["project"]) if row["project"] else None
+    if row["ticket"] and proj is not None and proj["ticket_url"]:
+        return proj["ticket_url"].replace("{ticket}", row["ticket"])
+    return None
+
+
+def items(value):
+    """A JSON list field as a list; text that is not JSON as one item."""
+    try:
+        out = json.loads(value) if value else []
+    except ValueError:
+        return [value]
+    return out if isinstance(out, list) else [out]
+
+
 def notes(conn, key):
     return conn.execute("SELECT * FROM task_notes WHERE task = ? ORDER BY ts, id", (key,)).fetchall()
 

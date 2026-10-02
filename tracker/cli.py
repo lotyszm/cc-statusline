@@ -168,20 +168,8 @@ def _hm(seconds):
     return report.hm(seconds) if seconds else "—"
 
 
-def _items(value):
-    try:
-        return json.loads(value) if value else []
-    except ValueError:
-        return [value]
-
-
-def _ticket_url(conn, r):
-    if r["url"]:
-        return r["url"]
-    proj = worklist.project(conn, r["project"]) if r["project"] else None
-    if r["ticket"] and proj is not None and proj["ticket_url"]:
-        return proj["ticket_url"].replace("{ticket}", r["ticket"])
-    return None
+_items = worklist.items
+_ticket_url = worklist.ticket_url
 
 
 def _show(conn, cfg, r, out, full=False):

@@ -6,9 +6,10 @@ import socket
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
-from tracker import dashboard, db, paths
+from tracker import dashboard, db, paths, worklist
 from tests.helpers import IsolatedTestCase, local_ts
 
 HOME = os.path.expanduser("~")
@@ -24,7 +25,9 @@ rate = 150
 """
 
 
-class DashboardTest(IsolatedTestCase):
+class ServedTestCase(IsolatedTestCase):
+    """A dashboard on a free port over two sessions, one on branch feature/12345/x."""
+
     def setUp(self):
         super().setUp()
         self.write_config(CONFIG)
@@ -63,6 +66,7 @@ class DashboardTest(IsolatedTestCase):
         self.assertEqual(status, 200)
         return json.loads(raw)
 
+class DashboardTest(ServedTestCase):
     def test_report_splits_parallel_time_and_prices_it(self):
         data = self.report()
         clients = {c["client"]: c for c in data["clients"]}
@@ -186,3 +190,64 @@ class ServeTest(IsolatedTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkListViewTest(ServedTestCase):
+    def setUp(self):
+        super().setUp()
+        conn = db.connect()
+        conn.execute("INSERT INTO projects (slug, client, path, ticket_url, created_at) VALUES (?, ?, ?, ?, ?)",
+                     ("storefront", "acme", ACME, "https://jira.example/browse/{ticket}", 0))
+        proj = worklist.project(conn, "storefront")
+        self.key = worklist.add(conn, proj, "Hotfix pricing", ticket="12345", next_step="deploy",
+                                description="Prices round the wrong way", pitfalls='["cache"]')
+        worklist.add(conn, proj, "Old checkout", status="done")
+        worklist.add(conn, proj, "Keep VAT in the API", kind="decision", status="in-force")
+        worklist.note(conn, self.key, "found the rounding")
+        worklist.metric(conn, self.key, "wrong prices", "12", "0", "SQL count")
+        conn.close()
+
+    def tasks(self, query=""):
+        status, ctype, raw = self.request(f"/api/tasks{query}")
+        self.assertEqual((status, ctype), (200, "application/json; charset=utf-8"))
+        return json.loads(raw)
+
+    def test_the_page_is_served(self):
+        status, ctype, raw = self.request("/tasks")
+        self.assertEqual((status, ctype), (200, "text/html; charset=utf-8"))
+        self.assertIn(b"/api/tasks", raw)
+
+    def test_open_view_lists_open_tasks_with_time_and_ticket_link(self):
+        data = self.tasks()
+        self.assertEqual([t["title"] for t in data["tasks"]], ["Hotfix pricing"])
+        t = data["tasks"][0]
+        # The branch feature/12345/x counts for the task that carries ticket 12345.
+        self.assertEqual((t["task"], t["client"], t["ticket_url"], t["next_step"]),
+                         (self.key, "acme", "https://jira.example/browse/12345", "deploy"))
+        self.assertGreater(t["seconds"], 3000)
+        self.assertEqual(data["projects"][0], {"slug": "storefront", "client": "acme", "open": 1})
+
+    def test_views_and_search_filter(self):
+        self.assertEqual([t["title"] for t in self.tasks("?view=done")["tasks"]], ["Old checkout"])
+        self.assertEqual([t["title"] for t in self.tasks("?view=decisions")["tasks"]], ["Keep VAT in the API"])
+        self.assertEqual(len(self.tasks("?view=all")["tasks"]), 3)
+        self.assertEqual([t["title"] for t in self.tasks("?view=all&q=vat")["tasks"]], ["Keep VAT in the API"])
+        self.assertEqual(self.tasks("?project=nowhere")["tasks"], [])
+
+    def test_one_task_in_full(self):
+        status, _, raw = self.request(f"/api/task?key={urllib.parse.quote(self.key)}")
+        self.assertEqual(status, 200)
+        t = json.loads(raw)
+        self.assertEqual((t["description"], t["pitfalls"]), ("Prices round the wrong way", ["cache"]))
+        self.assertEqual([n["text"] for n in t["notes"]], ["found the rounding"])
+        self.assertEqual([(m["before"], m["after"], m["method"]) for m in t["metrics"]], [("12", "0", "SQL count")])
+        self.assertEqual(t["history"][0]["field"], "created")
+        self.assertEqual([s["short"] for s in t["sessions"]], ["s1aaaaaa"])
+
+    def test_unknown_task_is_404(self):
+        status, _, _ = self.request("/api/task?key=nope%231")
+        self.assertEqual(status, 404)
+
+    def test_task_reads_check_the_host(self):
+        status, _, _ = self.request("/api/tasks", headers={"Host": "evil.example:80"})
+        self.assertEqual(status, 403)
