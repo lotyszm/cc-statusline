@@ -280,6 +280,10 @@ In a billable project, a session's time goes to a task:
 session, and the time still waiting for a task, which you can assign from there. The CSV export
 matches `cc-statusline report`.
 
+Next to the chart, one day is broken down by task: its hours and the same hours rounded up to the
+next quarter hour, with a total of each. Pick the day there or click it in the chart. Tasks under a
+minute are listed apart with their real time; they count in the hours total but are not rounded.
+
 `--install` starts it at login. It listens on 127.0.0.1 only and reads the database on every
 request, so it never shows stale numbers. To drive it by hand, or after `--no-dashboard`, use
 `bin/dashboard.sh start|stop|restart|status|logs`.

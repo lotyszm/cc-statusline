@@ -26,6 +26,7 @@
     --warning: #fab219;
     --good: #006300;
     --focus: #2a78d6;
+    --select: rgba(42, 120, 214, 0.10);
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }
   @media (prefers-color-scheme: dark) {
@@ -49,6 +50,7 @@
       --magnitude: #3987e5;
       --good: #0ca30c;
       --focus: #3987e5;
+      --select: rgba(57, 135, 229, 0.18);
     }
   }
 
@@ -60,7 +62,7 @@
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
   h2 { font-size: 15px; font-weight: 600; margin: 0; }
   .sub { color: var(--ink-2); margin: 2px 0 0; }
@@ -122,9 +124,11 @@
 
   .chart { width: 100%; }
   .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .col { cursor: pointer; }
   .chart .col:focus { outline: none; }
   .chart .col:focus .hit { fill: var(--wash); }
   @media (hover: hover) and (pointer: fine) { .chart .col:hover .hit { fill: var(--wash); } }
+  .chart .col.selected .hit { fill: var(--select); }
   .axis-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .value-label { fill: var(--ink-2); font-size: 11px; }
 
@@ -143,6 +147,21 @@
   .tooltip .key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
   .tooltip .t-sep { border-top: 1px solid var(--grid); margin: 6px 0; }
   .tooltip .t-client { color: var(--ink-2); }
+  .tooltip .t-hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  /* The chart and the selected day's tasks share one card, side by side when it fits. */
+  .overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 440px); gap: 16px; }
+  .overview > * { min-width: 0; margin: 0; }
+  .day-pane { border-left: 1px solid var(--grid); padding-left: 16px; }
+  .daynav { display: flex; align-items: center; gap: 4px; }
+  .daynav button { padding: 4px 9px; }
+  .daynav input { padding: 4px 8px; }
+  .day-body { transition: opacity 150ms ease; }
+  .day-body.loading { opacity: .5; }
+  .daytable tr.task td:first-child { padding-left: 12px; }
+  .daytable .ttl { color: var(--ink-2); margin-left: 6px; }
+  .daytable tr.sub td { color: var(--muted); font-size: 12px; padding-top: 14px; }
+  .daytable tfoot td { font-weight: 600; border-top: 1px solid var(--axis); border-bottom: 0; }
 
   .scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; }
@@ -200,6 +219,10 @@
     .chev { transition: none; }
     @starting-style { .detail-inner, .banner { transform: none; } }
   }
+  @media (max-width: 1100px) {
+    .overview { grid-template-columns: minmax(0, 1fr); }
+    .day-pane { border-left: 0; padding-left: 0; border-top: 1px solid var(--grid); padding-top: 16px; }
+  }
   @media (max-width: 760px) {
     .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .kpi.hero { grid-column: 1 / -1; }
@@ -255,15 +278,30 @@
       </div>
     </section>
 
-    <figure class="card" style="margin: 0 0 16px">
-      <div class="card-head">
-        <h2>Hours per day</h2>
-        <button type="button" id="toggle-table" aria-pressed="false">Table view</button>
-      </div>
-      <div class="legend" id="legend"></div>
-      <div class="chart" id="chart"></div>
-      <div class="scroll" id="chart-table" hidden></div>
-    </figure>
+    <section class="card overview">
+      <figure>
+        <div class="card-head">
+          <h2>Hours per day</h2>
+          <button type="button" id="toggle-table" aria-pressed="false">Table view</button>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div class="chart" id="chart"></div>
+        <div class="scroll" id="chart-table" hidden></div>
+      </figure>
+
+      <section class="day-pane" id="day-pane" aria-labelledby="day-title">
+        <div class="card-head">
+          <h2 id="day-title">Day by task</h2>
+          <div class="daynav">
+            <button type="button" id="day-prev" aria-label="Previous day">‹</button>
+            <input type="date" id="day" aria-label="Day">
+            <button type="button" id="day-next" aria-label="Next day">›</button>
+          </div>
+        </div>
+        <p class="hint">Pick a day here or click it in the chart. Rounded: each task up to the next quarter hour.</p>
+        <div class="scroll day-body" id="day-body"></div>
+      </section>
+    </section>
 
     <section class="card">
       <div class="card-head"><h2>Clients and tasks</h2><button type="button" id="export">Export CSV</button></div>
@@ -298,7 +336,8 @@ const SERIES = [
 ];
 
 const $ = (id) => document.getElementById(id);
-const state = { from: null, to: null, client: "*", preset: "month", data: null, tableView: false, open: new Set() };
+const state = { from: null, to: null, client: "*", preset: "month", data: null, tableView: false, open: new Set(),
+                day: null, dayData: null };       // day: picked by hand; null follows the end of the range
 
 // ── formatting ──────────────────────────────────────────────────────────────
 const nf1 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -316,6 +355,9 @@ const stampFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "sh
 const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 const clientName = (c) => c == null ? "(no client)" : c;
 const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const validDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
+// Hours rounded up to a quarter, from whole minutes: 15:20 stays 0.25, a stray second adds nothing.
+const quarters = (s) => Math.ceil(Math.round(s / 60) / 15) / 4;
 
 // Every piece of text from the data goes in through textContent.
 function el(tag, attrs = {}, ...children) {
@@ -359,12 +401,19 @@ function syncUrl() {
   const q = new URLSearchParams();
   if (state.preset) q.set("preset", state.preset); else { q.set("from", state.from); q.set("to", state.to); }
   if (state.client !== "*") q.set("client", state.client);
+  if (state.day) q.set("day", state.day);
   history.replaceState(null, "", `?${q}`);
+}
+const dayOf = () => state.day || state.to;
+// A new range drops a picked day that falls outside it.
+function keepDay() {
+  if (state.day && (state.day < state.from || state.day > state.to)) state.day = null;
 }
 
 // ── data ────────────────────────────────────────────────────────────────────
 async function load() {
   syncUrl();
+  loadDay();
   $("main").classList.add("loading");          // keep the frame while refetching
   try {
     const r = await fetch(`/api/report?from=${state.from}&to=${state.to}`);
@@ -440,6 +489,7 @@ function render() {
   }
 
   renderChart(d);
+  renderDay();
   renderClients(clients, cur);
   renderSessions($("unassigned"), d.sessions.filter((s) => wanted(s.client) && s.unassigned_seconds >= 60), true);
   renderSessions($("sessions"), d.sessions.filter((s) => wanted(s.client)), false);
@@ -502,7 +552,7 @@ function renderChart(d) {
   const tallest = days.reduce((a, b) => (b.total > a.total ? b : a), days[0]);
   days.forEach((b, i) => {
     const cx = M.l + band * i + band / 2, x = cx - barW / 2;
-    const g = sv("g", { class: "col", tabindex: 0, role: "img",
+    const g = sv("g", { class: "col", tabindex: 0, role: "button", "data-day": b.day,
       "aria-label": `${dayFmt.format(parseDay(b.day))}: ${h1(b.total)}` + SERIES.filter((s) => b[s.id]).map((s) => `, ${s.label} ${h1(b[s.id])}`).join("") });
     g.append(sv("rect", { class: "hit", x: M.l + band * i, y: M.t, width: band, height: PH, fill: "transparent" }));
     let base = y(0);
@@ -529,10 +579,23 @@ function renderChart(d) {
     g.addEventListener("pointerleave", hideTip);
     g.addEventListener("focus", () => show(null));
     g.addEventListener("blur", hideTip);
+    g.addEventListener("click", () => selectDay(b.day, true));
+    g.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectDay(b.day, true); }
+    });
     svg.append(g);
   });
   box.replaceChildren(svg);
+  markDay();
   renderChartTable(days);
+}
+
+function markDay() {
+  for (const g of $("chart").querySelectorAll(".col")) {
+    const on = g.dataset.day === dayOf();
+    g.classList.toggle("selected", on);
+    g.setAttribute("aria-pressed", String(on));
+  }
 }
 
 let tipTimer;
@@ -550,6 +613,7 @@ function showTip(b, px, py) {
     rows.push(el("div", { class: "t-sep" }));
     for (const [name, secs] of top) rows.push(el("div", { class: "t-row t-client" }, el("strong", { text: hm(secs) }), name));
   }
+  if (b.total > 0) rows.push(el("div", { class: "t-hint", text: "Click for its tasks" }));
   tip.replaceChildren(...rows);
   tip.dataset.state = "shown";
   const r = tip.getBoundingClientRect();
@@ -568,6 +632,82 @@ function renderChartTable(days) {
     el("td", { class: "num", text: hm(b.total) })));
   $("chart-table").replaceChildren(body.length ? el("table", {}, el("thead", {}, head), el("tbody", {}, ...body))
                                                : el("div", { class: "empty", text: "No agent time in this range." }));
+}
+
+// ── one day by task ─────────────────────────────────────────────────────────
+// Its own request, so any day works, inside the range or not.
+let dayRequest = 0;
+async function loadDay() {
+  const day = dayOf(), req = ++dayRequest;
+  $("day").value = day;
+  $("day-next").disabled = day >= iso(new Date());
+  markDay();
+  $("day-body").classList.add("loading");
+  try {
+    const r = await fetch(`/api/report?from=${day}&to=${day}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (req !== dayRequest) return;               // a later pick wins
+    state.dayData = data;
+    renderDay();
+  } catch (e) {
+    if (req === dayRequest) $("day-body").replaceChildren(el("div", { class: "empty", text: `Could not load the day: ${e.message}` }));
+  } finally {
+    if (req === dayRequest) $("day-body").classList.remove("loading");
+  }
+}
+
+function selectDay(day, reveal = false) {
+  if (!validDay(day)) return;
+  state.day = day;
+  syncUrl();
+  loadDay();
+  if (reveal) $("day-pane").scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+function shiftDay(n) {
+  const t = parseDay(dayOf());
+  t.setDate(t.getDate() + n);
+  selectDay(iso(t));
+}
+
+// Tasks under a minute go below the rest: listed with their real time, counted
+// in Hours, left out of Rounded, where each would otherwise turn into 0.25.
+function renderDay() {
+  const d = state.dayData;
+  if (!d) return;
+  const clients = d.clients.filter((c) => wanted(c.client));
+  const short = clients.flatMap((c) => c.tasks.filter((t) => t.seconds < 60).map((t) => ({ c, t })));
+  const groups = clients.map((c) => ({ c, tasks: c.tasks.filter((t) => t.seconds >= 60) })).filter((g) => g.tasks.length);
+  if (!groups.length && !short.length) {
+    $("day-body").replaceChildren(el("div", { class: "empty", text: "No agent time on this day." }));
+    return;
+  }
+  const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
+  const label = (t) => el("span", { class: t.task ? "mono" : "muted", text: t.task || "no task" });
+  const body = el("tbody");
+  for (const { c, tasks } of groups) {
+    body.append(el("tr", { class: "client" },
+      el("td", {}, clientName(c.client), el("span", { class: "tag", text: c.billable ? "billable" : "not billable" })),
+      el("td", { class: "num", text: h2(sum(tasks, (t) => t.seconds)) }),
+      el("td", { class: "num", text: nf2.format(sum(tasks, (t) => quarters(t.seconds))) })));
+    for (const t of tasks) body.append(el("tr", { class: "task" },
+      el("td", {}, label(t), t.title ? el("span", { class: "ttl", text: t.title }) : null),
+      el("td", { class: "num", text: h2(t.seconds) }),
+      el("td", { class: "num", text: nf2.format(quarters(t.seconds)) })));
+  }
+  if (short.length) {
+    body.append(el("tr", { class: "sub" }, el("td", { colspan: 3, text: "Short, under a minute: counted in Hours, not rounded" })));
+    for (const { c, t } of short) body.append(el("tr", {},
+      el("td", {}, label(t), el("span", { class: "ttl", text: `${clientName(c.client)} · ${t.seconds < 1 ? "<1" : Math.floor(t.seconds)} s` })),
+      el("td", { class: "num", text: h2(t.seconds) }),
+      el("td", { class: "num muted", text: "–" })));
+  }
+  const head = el("tr", {}, el("th", { text: "Client / task" }), el("th", { class: "num", text: "Hours" }),
+    el("th", { class: "num", text: "Rounded", title: "Each task rounded up to the next quarter hour" }));
+  const foot = el("tr", {}, el("td", { text: "Total" }),
+    el("td", { class: "num", text: h2(sum(clients, (c) => sum(c.tasks, (t) => t.seconds))) }),
+    el("td", { class: "num", text: nf2.format(sum(groups, (g) => sum(g.tasks, (t) => quarters(t.seconds)))) }));
+  $("day-body").replaceChildren(el("table", { class: "daytable" }, el("thead", {}, head), body, el("tfoot", {}, foot)));
 }
 
 // ── disclosure rows ─────────────────────────────────────────────────────────
@@ -745,14 +885,18 @@ function exportCsv() {
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────────
-for (const b of document.querySelectorAll("[data-preset]")) b.addEventListener("click", () => { applyPreset(b.dataset.preset); load(); });
+for (const b of document.querySelectorAll("[data-preset]")) b.addEventListener("click", () => { applyPreset(b.dataset.preset); keepDay(); load(); });
 for (const id of ["from", "to"]) $(id).addEventListener("change", () => {
   if (!$("from").value || !$("to").value) return;
   state.from = $("from").value; state.to = $("to").value; state.preset = null;
   markPreset();
+  keepDay();
   load();
 });
 $("client").addEventListener("change", () => { state.client = $("client").value; state.open.clear(); syncUrl(); render(); });
+$("day").addEventListener("change", () => selectDay($("day").value));
+$("day-prev").addEventListener("click", () => shiftDay(-1));
+$("day-next").addEventListener("click", () => shiftDay(1));
 $("export").addEventListener("click", exportCsv);
 $("toggle-table").addEventListener("click", () => {
   state.tableView = !state.tableView;
@@ -764,7 +908,6 @@ let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.data && renderChart(state.data), 120); });
 
 const initial = new URLSearchParams(location.search);
-const validDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
 if (validDay(initial.get("from")) && validDay(initial.get("to"))) {
   state.preset = null; state.from = initial.get("from"); state.to = initial.get("to");
   $("from").value = state.from; $("to").value = state.to;
@@ -773,6 +916,8 @@ if (validDay(initial.get("from")) && validDay(initial.get("to"))) {
   applyPreset(["month", "last-month", "7", "today"].includes(initial.get("preset")) ? initial.get("preset") : "month");
 }
 state.client = initial.get("client") || "*";
+state.day = validDay(initial.get("day")) ? initial.get("day") : null;
+$("day").max = iso(new Date());
 load();
 </script>
 </body>
