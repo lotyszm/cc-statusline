@@ -65,14 +65,14 @@ def _raw_task(cfg, row, log, at, client):
     return task
 
 
-def _key(cfg, session_id, row, project_dir, log, at=None, aliases=None):
+def _key(cfg, session_id, row, project_dir, log, at=None, aliases=None, clients=None):
     client, billable = cfg.classify(row["cwd"])
     if client is None:
         # The agent may have cd'd somewhere unrelated (/tmp); the session
         # still belongs to the project it was started in.
         client, billable = cfg.classify(project_dir)
     task = _task(cfg, row, log, row["ts"] if at is None else at, client, aliases)
-    named = cfg.task_client(task)
+    named = cfg.task_client(task, clients)
     if named is not None:
         client, billable = named
     return Key(session_id, client, billable, row["project"] or project_dir, row["branch"], task)
@@ -97,6 +97,7 @@ def intervals(conn, cfg, start, end):
             project_dirs[r["session_id"]] = r["project_dir"]
     logs = db.assignments(conn, sids)
     aliases = db.task_aliases(conn)
+    clients = cfg.client_flags(db.project_clients(conn))
 
     out = []
     for sid, rows in by_session.items():
@@ -111,7 +112,8 @@ def intervals(conn, cfg, start, end):
             # not from the next event.
             cuts = [s] + log.changes_between(s, e) + [e]
             for p0, p1 in zip(cuts, cuts[1:]):
-                spans.append((p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0, aliases=aliases)))
+                spans.append((p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0,
+                                           aliases=aliases, clients=clients)))
         out.extend(timeline.merge(spans))
     out.sort(key=lambda iv: iv[0])
     return out
@@ -206,7 +208,8 @@ def current(conn, cfg, session_id, now=None):
         return None
     log = _TaskLog(db.assignments(conn, [session_id])[session_id])
     return _key(cfg, session_id, last, sess["project_dir"] if sess else None, log,
-                at=now or time.time(), aliases=db.task_aliases(conn))
+                at=now or time.time(), aliases=db.task_aliases(conn),
+                clients=cfg.client_flags(db.project_clients(conn)))
 
 
 def today(conn, cfg, session_id, now=None):

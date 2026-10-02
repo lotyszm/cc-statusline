@@ -142,6 +142,15 @@
   .small td, .small th { padding: 4px 6px; font-size: 13px; }
   details.more > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .empty { color: var(--muted); padding: 8px 0; }
+  .edit { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--surface-2); }
+  .edit form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .edit label { color: var(--ink-2); min-width: 52px; }
+  .edit select { max-width: 100%; }
+  .edit textarea { flex: 1 1 100%; min-height: 56px; font: inherit; color: var(--ink); background: var(--surface-1);
+                   border: 0; box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px; resize: vertical; }
+  .edit .hint { flex: 1 1 100%; color: var(--muted); font-size: 12px; margin: 0; }
+  .edit button[type="submit"] { padding: 5px 12px; }
+  .banner.ok { border-left-color: var(--good); }
   footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
 
   @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
@@ -194,8 +203,8 @@
     </aside>
   </div>
 
-  <footer>Read-only. Change tasks with <span class="mono">cc-statusline tasks …</span> or
-    <span class="mono">todo</span>; the page reads the database afresh on every load.</footer>
+  <footer>Status and project change here; everything else with <span class="mono">cc-statusline tasks …</span> or
+    <span class="mono">todo</span>. Every change goes to the task's history; the page reads the database afresh on every load.</footer>
 </div>
 
 <script>
@@ -237,7 +246,77 @@ function ticketLink(t) {
               : el("span", { class: "mono muted ticket", text: t.ticket });
 }
 
-function banner(text) { $("banner").textContent = text || ""; $("banner").hidden = !text; }
+let bannerTimer;
+function banner(text, ok = false) {
+  const b = $("banner");
+  clearTimeout(bannerTimer);
+  b.textContent = text || ""; b.hidden = !text; b.classList.toggle("ok", ok);
+  if (ok) bannerTimer = setTimeout(() => { b.hidden = true; }, 5000);
+}
+
+// Writes carry the header the server requires; a page from another origin cannot send it.
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-CC-Statusline": "1" },
+                                body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data.task;
+}
+
+async function saved(t, message) {
+  state.task = t.task;
+  renderTask(t);
+  await load();
+  banner(message, true);
+}
+
+function editBlock(t) {
+  const status = el("select", { name: "status", "aria-label": "Status" },
+    ...t.statuses.map((s) => el("option", { value: s, text: label(s), selected: s === t.status })));
+  const outcome = el("textarea", { name: "outcome", placeholder: "Outcome: what was actually done (required to close)",
+                                   "aria-label": "Outcome", hidden: true }, t.outcome || "");
+  const showOutcome = () => { outcome.hidden = status.value !== "done"; outcome.required = status.value === "done"; };
+  status.addEventListener("change", showOutcome);
+  showOutcome();
+  const statusForm = el("form", {}, el("label", { text: "Status" }), status,
+    el("button", { type: "submit", text: "Save" }), outcome);
+  statusForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const btn = statusForm.querySelector("button");
+    btn.disabled = true;
+    try {
+      const was = t.status;
+      const next = await post("/api/task/status", { key: t.task, status: status.value, outcome: status.value === "done" ? outcome.value : "" });
+      await saved(next, `${next.task}: ${label(was)} → ${label(next.status)}.`);
+    } catch (e) { banner(`Could not change the status: ${e.message}`); btn.disabled = false; }
+  });
+
+  const projects = (state.data ? state.data.projects : []);
+  const project = el("select", { name: "project", "aria-label": "Project" },
+    ...projects.map((p) => el("option", { value: p.slug, selected: p.slug === t.project,
+                                          text: `${p.slug}${p.client ? " · " + p.client : ""}` })));
+  const hint = el("p", { class: "hint" });
+  const showHint = () => {
+    const p = projects.find((x) => x.slug === project.value);
+    hint.textContent = !p || p.slug === t.project ? "Moving gives the task a new number in that project and its client; sessions, notes, metrics and history go with it, and the old key keeps working."
+      : `Becomes ${p.client ? p.client + ":" : ""}${p.slug}#… · all its time, from its first session on, then counts for ${p.client || "no client"}.`;
+  };
+  project.addEventListener("change", showHint);
+  showHint();
+  const moveForm = el("form", {}, el("label", { text: "Project" }), project, el("button", { type: "submit", text: "Move" }), hint);
+  moveForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (project.value === t.project) return;
+    const btn = moveForm.querySelector("button");
+    btn.disabled = true;
+    try {
+      const next = await post("/api/task/move", { key: t.task, project: project.value });
+      state.project = state.project && next.project;     // keep a project filter on the task's new project
+      await saved(next, `${t.task} moved to ${next.task}.`);
+    } catch (e) { banner(`Could not move the task: ${e.message}`); btn.disabled = false; }
+  });
+  return el("div", { class: "edit", role: "group", "aria-label": "Change the task" }, statusForm, moveForm);
+}
 
 // The view lives in the URL, so a reload, a bookmark or a link from the time page comes back to it.
 function syncUrl() {
@@ -370,6 +449,8 @@ function renderTask(t) {
     el("h2", { text: t.title || t.task }),
     el("div", { class: "facts" }, ...facts),
     el("div", { class: "muted", text: dates }),
+    t.moved_from && t.moved_from.length ? el("div", { class: "muted mono", text: `moved from ${t.moved_from.join(", ")}` }) : null,
+    editBlock(t),
     t.next_step && t.status !== "done" ? section("Next step", el("p", { class: "text next", text: t.next_step })) : null,
     textSection("Criteria", t.criteria),
     textSection("Description", t.description),
@@ -395,8 +476,8 @@ state.view = VIEWS.includes(initial.get("view")) ? initial.get("view") : "open";
 state.project = initial.get("project") || "";
 state.q = initial.get("q") || "";
 $("q").value = state.q;
-load();
-if (initial.get("task")) openTask(initial.get("task"));
+// The pane's project list comes with the work list, so a linked task opens after it.
+load().then(() => { if (initial.get("task")) openTask(initial.get("task")); });
 </script>
 </body>
 </html>

@@ -251,3 +251,37 @@ class WorkListViewTest(ServedTestCase):
     def test_task_reads_check_the_host(self):
         status, _, _ = self.request("/api/tasks", headers={"Host": "evil.example:80"})
         self.assertEqual(status, 403)
+
+    def post(self, path, body, header=True):
+        headers = {"Content-Type": "application/json", **({"X-CC-Statusline": "1"} if header else {})}
+        status, _, raw = self.request(path, body, headers)
+        return status, json.loads(raw)
+
+    def test_writes_need_the_header(self):
+        status, _ = self.post("/api/task/status", {"key": self.key, "status": "waiting"}, header=False)
+        self.assertEqual(status, 403)
+        self.assertEqual(db.task_details(db.connect(), self.key)["status"], "open")
+
+    def test_status_change(self):
+        status, body = self.post("/api/task/status", {"key": self.key, "status": "done"})
+        self.assertEqual((status, body["error"]), (400, "closing needs an outcome: what was actually done"))
+        status, body = self.post("/api/task/status", {"key": self.key, "status": "done", "outcome": "rounded"})
+        self.assertEqual((status, body["task"]["status"], body["task"]["outcome"]), (200, "done", "rounded"))
+        self.assertEqual(body["task"]["history"][-1]["author"], "dashboard")
+        status, _ = self.post("/api/task/status", {"key": self.key, "status": "sideways"})
+        self.assertEqual(status, 400)
+
+    def test_move_to_another_project(self):
+        conn = db.connect()
+        conn.execute("INSERT INTO projects (slug, client, path, created_at) VALUES ('globex-shop', 'Globex', ?, 0)",
+                     (Globex,))
+        conn.close()
+        status, body = self.post("/api/task/move", {"key": self.key, "project": "globex-shop"})
+        self.assertEqual(status, 200)
+        t = body["task"]
+        self.assertEqual((t["task"], t["client"], t["moved_from"]), ("Globex:globex-shop#1", "Globex", [self.key]))
+        self.assertEqual([n["text"] for n in t["notes"]], ["found the rounding"])
+        status, _ = self.post("/api/task/move", {"key": self.key, "project": "globex-shop"})
+        self.assertEqual(status, 404)                     # the old key is gone from the list...
+        status, _, raw = self.request(f"/api/tasks?view=all")
+        self.assertIn("Globex:globex-shop#1", [x["task"] for x in json.loads(raw)["tasks"]])

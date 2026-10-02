@@ -19,6 +19,9 @@ from . import db, ledger
 
 OPEN_STATUSES = db.OPEN_STATUSES
 CLOSED_STATUSES = ("done", "parked")
+STATUSES = {"task": OPEN_STATUSES + CLOSED_STATUSES, "decision": ("in-force", "revoked")}
+# Statuses that close a record: they set closed_at, the others clear it.
+CLOSING = ("done", "parked", "revoked")
 
 
 # ── projects ─────────────────────────────────────────────────────────────────
@@ -109,6 +112,9 @@ def resolve(conn, ref, proj=None):
     """A task key from '42', '#42', 'cms#42', a ticket or a full key; None if unknown."""
     ref = ref.strip()
     m = re.fullmatch(r"#?(\d+)", ref)
+    moved = db.alias_of(db.task_aliases(conn), ref)
+    if moved != ref and db.task_details(conn, moved) is not None and ":" in ref:
+        return moved                     # an old key of a task moved to another project
     if m and proj is not None:
         row = conn.execute("SELECT task FROM tasks WHERE project = ? AND number = ?",
                            (proj["slug"], int(m.group(1)))).fetchone()
@@ -207,6 +213,73 @@ def close(conn, key, status, outcome=None, now=None, author=None, **fields):
     now = now or time.time()
     fields.pop("status", None)
     return update(conn, key, now, author, status=status, outcome=outcome, closed_at=now, **fields)
+
+
+def set_status(conn, key, status, outcome=None, now=None, author=None):
+    """Change a record's status the way the CLI would: done needs an outcome,
+    a closing status stamps closed_at, reopening clears it."""
+    row = db.task_details(conn, key)
+    if row is None:
+        raise LookupError(f"no task {key}")
+    kind = row["kind"] or "task"
+    if status not in STATUSES.get(kind, ()):
+        raise ValueError(f"{status!r} is not a status of a {kind}; use one of {', '.join(STATUSES[kind])}")
+    now = now or time.time()
+    if status == "done":
+        return close(conn, key, status, outcome or None, now, author)
+    changed = update(conn, key, now, author, status=status, outcome=outcome or None,
+                     closed_at=now if status in CLOSING and row["closed_at"] is None else None)
+    if status not in CLOSING and row["closed_at"] is not None:
+        conn.execute("UPDATE tasks SET closed_at = NULL, updated_at = ? WHERE task = ?", (now, key))
+        changed["closed_at"] = None
+    return changed
+
+
+# Tables whose rows hang on a task key; a moved task takes them along.
+KEYED_TABLES = ("assignments", "task_notes", "task_metrics", "task_history")
+
+
+def move(conn, key, slug, now=None, author=None):
+    """Move a task to another project, and so to that project's client.
+
+    It gets the next number there and a key to match. Its sessions, notes,
+    metrics, history and the dependencies other tasks list on it follow it, in
+    one transaction, so its time is the same before and after. The old key
+    keeps resolving to the new one. Returns the new key.
+    """
+    row = db.task_details(conn, key)
+    if row is None:
+        raise LookupError(f"no task {key}")
+    target = project(conn, slug)
+    if target is None:
+        raise LookupError(f"no project {slug}")
+    if row["project"] == slug:
+        return key
+    now = now or time.time()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        number = conn.execute("SELECT coalesce(max(number), 0) + 1 FROM tasks WHERE project = ?",
+                              (slug,)).fetchone()[0]
+        new = key_for(target, number)
+        if db.task_details(conn, new) is not None:
+            raise ValueError(f"{new} already exists")
+        conn.execute("UPDATE tasks SET task = ?, project = ?, number = ?, updated_at = ? WHERE task = ?",
+                     (new, slug, number, now, key))
+        for table in KEYED_TABLES:
+            conn.execute(f"UPDATE {table} SET task = ? WHERE task = ?", (new, key))
+        for other in conn.execute("SELECT task, depends_on FROM tasks WHERE depends_on LIKE ?",
+                                  (f"%{key}%",)).fetchall():
+            deps = [new if d == key else d for d in items(other["depends_on"])]
+            conn.execute("UPDATE tasks SET depends_on = ? WHERE task = ?",
+                         (json.dumps(deps, ensure_ascii=False), other["task"]))
+        conn.execute("UPDATE task_moves SET new_task = ? WHERE new_task = ?", (new, key))
+        conn.execute("INSERT OR REPLACE INTO task_moves (old_task, new_task, ts) VALUES (?, ?, ?)", (key, new, now))
+        _history(conn, new, "moved", key, new, now, author)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return new
 
 
 def assign_session(conn, cfg, session_id, key, now=None, since=None):

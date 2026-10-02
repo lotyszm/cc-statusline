@@ -1,9 +1,10 @@
 """Local web dashboard: one page and a small JSON API, on 127.0.0.1 only.
 
 Each request reads the config and the database afresh, so the page always
-agrees with the CLI. Assigning a task is the only write. It needs a custom
-header, which a page from another origin cannot send without a CORS preflight
-this server never approves, and the Host check stops DNS rebinding.
+agrees with the CLI. The writes - assigning a session, changing a task's
+status, moving a task to another project - need a custom header, which a page
+from another origin cannot send without a CORS preflight this server never
+approves, and the Host check stops DNS rebinding.
 """
 
 import json
@@ -213,6 +214,9 @@ def build_task(conn, cfg, key, now=None):
     out.update({
         "kind": row["kind"] or "task", "client": p["client"] if p else None,
         "ticket_url": worklist.ticket_url(conn, row), "seconds": secs,
+        "statuses": list(worklist.STATUSES.get(row["kind"] or "task", ())),
+        "moved_from": [r["old_task"] for r in conn.execute(
+            "SELECT old_task FROM task_moves WHERE new_task = ? ORDER BY ts", (key,))],
         "metrics": [dict(m) for m in worklist.metrics(conn, key)],
         "notes": [dict(n) for n in worklist.notes(conn, key)],
         "history": [dict(h) for h in worklist.history(conn, key)][-100:],
@@ -295,7 +299,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok() or self.headers.get("X-CC-Statusline") != "1":
             return self._send(403, {"error": "forbidden"})
-        if urlparse(self.path).path != "/api/assign":
+        path = urlparse(self.path).path
+        if path not in ("/api/assign", "/api/task/status", "/api/task/move"):
             return self._send(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -304,6 +309,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except ValueError:
             return self._send(400, {"error": "expected a JSON object"})
+        if path != "/api/assign":
+            return self._task_write(path, body)
         task = str(body.get("task") or "").strip() or None
         title = str(body.get("title") or "").strip() or None
         cfg = config.load()
@@ -323,6 +330,25 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         return self._send(200, {"ok": True, "session_id": sid, "task": task})
+
+
+    def _task_write(self, path, body):
+        key = str(body.get("key") or "").strip()
+        cfg = config.load()
+        conn = db.connect()
+        try:
+            if path == "/api/task/status":
+                worklist.set_status(conn, key, str(body.get("status") or "").strip(),
+                                    str(body.get("outcome") or "").strip() or None, author="dashboard")
+            else:
+                key = worklist.move(conn, key, str(body.get("project") or "").strip(), author="dashboard")
+            return self._send(200, {"ok": True, "task": build_task(conn, cfg, key)})
+        except LookupError as e:
+            return self._send(404, {"error": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        finally:
+            conn.close()
 
 
 def make_server(port):

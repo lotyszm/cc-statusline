@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 4              # 2: assignments.branch; 3: task details; 4: work list
+SCHEMA_VERSION = 5              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -110,6 +110,13 @@ CREATE VIEW IF NOT EXISTS v_tasks AS
            datetime(t.closed_at, 'unixepoch', 'localtime') AS closed,
            datetime(t.updated_at, 'unixepoch', 'localtime') AS updated
     FROM tasks t LEFT JOIN projects p ON p.slug = t.project;
+-- A task moved to another project keeps answering to its old key.
+CREATE TABLE IF NOT EXISTS task_moves (
+    old_task TEXT PRIMARY KEY,
+    new_task TEXT NOT NULL,
+    ts       REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS asked (
     session_id TEXT NOT NULL,
     candidate  TEXT NOT NULL,
@@ -295,15 +302,28 @@ def task_aliases(conn):
         for alias in ([f"{r['client']}:{ticket}"] if r["client"] else []) + [ticket]:
             if alias not in best or score > best[alias][0]:
                 best[alias] = (score, r["task"])
-    return {a: v[1] for a, v in best.items()}
+    out = {a: v[1] for a, v in best.items()}
+    for r in conn.execute("SELECT old_task, new_task FROM task_moves"):
+        out[_alias_form(r["old_task"])] = r["new_task"]
+    return out
+
+
+def project_clients(conn):
+    """Clients the work list's projects belong to."""
+    return {r[0] for r in conn.execute("SELECT DISTINCT client FROM projects WHERE client IS NOT NULL")}
+
+
+def _alias_form(task):
+    """The form alias_of looks a key up by: the part after the client upper-cased."""
+    client, sep, rest = task.rpartition(":")
+    return f"{client}{sep}{rest.upper()}"
 
 
 def alias_of(aliases, task):
     """The work-list task a key stands for, or the key itself."""
     if not task or not aliases:
         return task
-    client, sep, rest = task.rpartition(":")
-    return aliases.get(f"{client}{sep}{rest.upper()}", task)
+    return aliases.get(_alias_form(task), task)
 
 
 def task_details(conn, task=None):

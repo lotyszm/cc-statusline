@@ -142,7 +142,13 @@ class Config:
             return task
         return f"{client}:{task}"
 
-    def task_client(self, task):
+    def client_flags(self, names=()):
+        """{client: billable} for the rules' clients plus `names` (the work list's
+        projects): a name only a {client} rule produces takes that rule's flag."""
+        pattern = next((r.billable for r in self.rules if not r.client), True)
+        return {**{n: pattern for n in names if n}, **self.known_clients}
+
+    def task_client(self, task, clients=None):
         """(client, billable) named by a task key such as 'own:claude#9', or None.
 
         A task key carries its client, so time logged to it belongs to that
@@ -150,10 +156,11 @@ class Config:
         """
         if not task or ":" not in task:
             return None
+        clients = self.known_clients if clients is None else clients
         name = task.split(":", 1)[0]
-        if name not in self.known_clients:
+        if name not in clients:
             return None
-        return (name, self.known_clients[name])
+        return (name, clients[name])
 
     def rate(self, client):
         return self.rates.get(client)
