@@ -104,6 +104,12 @@ class Config:
         self.namespace = bool(t.get("namespace", False))
         self.rates = {name: c["rate"] for name, c in data.get("clients", {}).items()
                       if isinstance(c, dict) and "rate" in c}
+        # Clients a task key may name ("own:claude#9"): those a rule names
+        # outright, with that rule's billable flag, and those with a [clients] entry.
+        self.known_clients = {name: True for name in data.get("clients", {})}
+        for rule in reversed(self.rules):
+            if rule.client:
+                self.known_clients[rule.client] = rule.billable
         self._seen = {}
 
     def classify(self, path):
@@ -135,6 +141,19 @@ class Config:
         if not (self.namespace and client and task) or ":" in task:
             return task
         return f"{client}:{task}"
+
+    def task_client(self, task):
+        """(client, billable) named by a task key such as 'own:claude#9', or None.
+
+        A task key carries its client, so time logged to it belongs to that
+        client wherever the session happens to run.
+        """
+        if not task or ":" not in task:
+            return None
+        name = task.split(":", 1)[0]
+        if name not in self.known_clients:
+            return None
+        return (name, self.known_clients[name])
 
     def rate(self, client):
         return self.rates.get(client)

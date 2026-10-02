@@ -72,6 +72,9 @@ def _key(cfg, session_id, row, project_dir, log, at=None, aliases=None):
         # still belongs to the project it was started in.
         client, billable = cfg.classify(project_dir)
     task = _task(cfg, row, log, row["ts"] if at is None else at, client, aliases)
+    named = cfg.task_client(task)
+    if named is not None:
+        client, billable = named
     return Key(session_id, client, billable, row["project"] or project_dir, row["branch"], task)
 
 
