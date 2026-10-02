@@ -41,7 +41,7 @@ class _TaskLog:
         return sorted(set(self.times[bisect.bisect_right(self.times, start):bisect.bisect_left(self.times, end)]))
 
 
-def _task(cfg, row, log, at):
+def _task(cfg, row, log, at, client=None):
     """The task for time at `at` that hangs on event `row`.
 
     A confirmed assignment wins, with one exception: on a branch that carries
@@ -49,7 +49,7 @@ def _task(cfg, row, log, at):
     Checking out feature/12345 means working on 12345; coming back, or moving
     to a branch without a number, the confirmed task applies again.
     """
-    branch_task = cfg.branch_task(row["branch"])
+    branch_task = cfg.qualify(client, cfg.branch_task(row["branch"]))
     hit = log.at(at)
     if hit is None:
         return branch_task
@@ -65,7 +65,7 @@ def _key(cfg, session_id, row, project_dir, log, at=None):
         # The agent may have cd'd somewhere unrelated (/tmp); the session
         # still belongs to the project it was started in.
         client, billable = cfg.classify(project_dir)
-    task = _task(cfg, row, log, row["ts"] if at is None else at)
+    task = _task(cfg, row, log, row["ts"] if at is None else at, client)
     return Key(session_id, client, billable, row["project"] or project_dir, row["branch"], task)
 
 

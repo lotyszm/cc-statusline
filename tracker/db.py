@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 2              # 2: assignments.branch
+SCHEMA_VERSION = 3              # 2: assignments.branch; 3: task details
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -52,9 +52,13 @@ CREATE TABLE IF NOT EXISTS assignments (
 CREATE INDEX IF NOT EXISTS assignments_session ON assignments(session_id, effective_from);
 
 CREATE TABLE IF NOT EXISTS tasks (
-    task       TEXT PRIMARY KEY,
-    title      TEXT,
-    updated_at REAL
+    task        TEXT PRIMARY KEY,
+    title       TEXT,
+    updated_at  REAL,
+    description TEXT,               -- what the task is about
+    plan        TEXT,               -- how it is to be solved, or how it was
+    status      TEXT,               -- free text, as the tracker of origin names it
+    url         TEXT                -- the ticket in Jira, Redmine and the like
 );
 
 CREATE TABLE IF NOT EXISTS asked (
@@ -93,12 +97,16 @@ def connect(path=None):
     return conn
 
 
+TASK_DETAILS = ("description", "plan", "status", "url")
+
+
 def _migrate(conn):
     """Bring tables created by older versions up to the current schema."""
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(assignments)")}
-    if "branch" not in cols:
+    for table, column in [("assignments", "branch")] + [("tasks", c) for c in TASK_DETAILS]:
+        if column in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            continue
         try:
-            conn.execute("ALTER TABLE assignments ADD COLUMN branch TEXT")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
         except sqlite3.OperationalError:
             pass                        # another hook process migrated it first
 
@@ -179,12 +187,34 @@ def latest_branch(conn, session_id):
 
 
 def set_task_title(conn, task, title, now=None):
-    conn.execute("INSERT OR REPLACE INTO tasks (task, title, updated_at) VALUES (?, ?, ?)",
-                 (task, title, now or time.time()))
+    set_task(conn, task, now, title=title)
+
+
+def set_task(conn, task, now=None, **fields):
+    """Store the given fields of a task, keeping the ones not given.
+
+    No upsert and no INSERT OR REPLACE: the first needs SQLite 3.24, the second
+    would wipe a description whenever a title is set.
+    """
+    unknown = set(fields) - {"title", *TASK_DETAILS}
+    if unknown:
+        raise ValueError(f"unknown task fields: {', '.join(sorted(unknown))}")
+    now = now or time.time()
+    conn.execute("INSERT OR IGNORE INTO tasks (task, updated_at) VALUES (?, ?)", (task, now))
+    given = [k for k, v in fields.items() if v is not None]
+    conn.execute(f"UPDATE tasks SET {''.join(f'{k} = ?, ' for k in given)}updated_at = ? WHERE task = ?",
+                 [fields[k] for k in given] + [now, task])
 
 
 def task_titles(conn):
     return {r["task"]: r["title"] for r in conn.execute("SELECT task, title FROM tasks")}
+
+
+def task_details(conn, task=None):
+    """{task: row} for every task, or the row of one task (None if unknown)."""
+    if task is not None:
+        return conn.execute("SELECT * FROM tasks WHERE task = ?", (task,)).fetchone()
+    return {r["task"]: r for r in conn.execute("SELECT * FROM tasks")}
 
 
 def mark_asked(conn, session_id, candidate, now=None):

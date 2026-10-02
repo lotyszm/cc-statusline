@@ -90,6 +90,7 @@ def cmd_task(args, conn, cfg, now, out):
         return 0
 
     task = args.task if args.action == "set" else None
+    task = cfg.qualify(cfg.classify(sess["project_dir"])[0], task)
     try:
         if getattr(args, "from_start", False):
             effective = sess["first_ts"]
@@ -113,6 +114,92 @@ def cmd_task(args, conn, cfg, now, out):
     status.write(conn, cfg, sid, now)
     what = f"task {task}" + (f" ({args.title})" if task and args.title else "") if task else "no task"
     print(f"{sid[:8]}: {what} from {_local(effective)}", file=out)
+    return 0
+
+
+def _text(value):
+    """A field value as given, '@path' for a file's contents, '-' for stdin."""
+    if value is None or value == "":
+        return value
+    if value == "-":
+        return sys.stdin.read()
+    if value.startswith("@"):
+        return Path(value[1:]).expanduser().read_text(encoding="utf-8")
+    return value
+
+
+def _task_fields(args):
+    return {f: _text(getattr(args, f)) for f in ("title", *db.TASK_DETAILS)}
+
+
+def cmd_tasks(args, conn, cfg, now, out):
+    if args.action == "list":
+        rows = [r for r in db.task_details(conn).values()
+                if (not args.client or r["task"].lower().startswith(args.client.lower() + ":"))
+                and (not args.status or (r["status"] or "").lower() == args.status.lower())]
+        if not rows:
+            print("no tasks", file=out)
+            return 0
+        width = max(len(r["task"]) for r in rows)
+        swidth = max(len(r["status"] or "—") for r in rows)
+        for r in sorted(rows, key=lambda r: r["task"]):
+            print(f"{r['task'].ljust(width)}  {(r['status'] or '—').ljust(swidth)}  {r['title'] or ''}".rstrip(),
+                  file=out)
+        return 0
+
+    if args.action == "show":
+        r = db.task_details(conn, args.task)
+        if r is None:
+            _err(f"no task '{args.task}'")
+            return 2
+        print(f"task     {r['task']}\ntitle    {r['title'] or '—'}\nstatus   {r['status'] or '—'}\n"
+              f"url      {r['url'] or '—'}\nupdated  {_local(r['updated_at'])}", file=out)
+        for name in ("description", "plan"):
+            if r[name]:
+                print(f"\n{name}\n{r[name].rstrip()}", file=out)
+        return 0
+
+    if args.action == "set":
+        try:
+            fields = _task_fields(args)
+        except OSError as e:
+            _err(e)
+            return 2
+        if all(v is None for v in fields.values()):
+            _err("nothing to set: give --title, --description, --plan, --status or --url")
+            return 2
+        db.set_task(conn, args.task, now, **fields)
+        print(f"task {args.task} updated", file=out)
+        return 0
+
+    # import: one JSON object per line, {"task": ..., "title": ..., "plan": ...}
+    try:
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text(encoding="utf-8")
+    except OSError as e:
+        _err(e)
+        return 2
+    allowed = ("title", *db.TASK_DETAILS)
+    count = 0
+    conn.execute("BEGIN")
+    try:
+        for n, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+                task = str(item["task"]).strip()
+                if not task or not isinstance(item, dict):
+                    raise ValueError
+            except (ValueError, KeyError, TypeError):
+                raise ValueError(f"line {n}: expected a JSON object with a \"task\"") from None
+            db.set_task(conn, task, now, **{k: item[k] for k in allowed if item.get(k) is not None})
+            count += 1
+    except ValueError as e:
+        conn.execute("ROLLBACK")
+        _err(f"{args.file}: {e}; nothing imported")
+        return 2
+    conn.execute("COMMIT")
+    print(f"imported {count} tasks", file=out)
     return 0
 
 
@@ -288,6 +375,22 @@ def build_parser():
     tw = tsub.add_parser("show", help="current task and history")
     tw.add_argument("--session", required=True)
     t.set_defaults(func=cmd_task)
+
+    k = sub.add_parser("tasks", help="the tasks themselves: titles, descriptions, plans")
+    ksub = k.add_subparsers(dest="action", metavar="action", required=True)
+    kl = ksub.add_parser("list", help="every known task")
+    kl.add_argument("--client", help="only keys starting with 'client:'")
+    kl.add_argument("--status")
+    kw = ksub.add_parser("show", help="one task in full")
+    kw.add_argument("task")
+    kset = ksub.add_parser("set", help="describe a task; fields not given are kept")
+    kset.add_argument("task")
+    for name in ("title", *db.TASK_DETAILS):
+        kset.add_argument(f"--{name}", help="text, @file or - for stdin" if name in ("description", "plan") else None)
+    ki = ksub.add_parser("import", help="add or update tasks from JSON Lines")
+    ki.add_argument("file", help=f"one object per line with \"task\" and any of: title, {', '.join(db.TASK_DETAILS)}"
+                                 "; - for stdin")
+    k.set_defaults(func=cmd_tasks)
 
     ex = sub.add_parser("explain", help="how a session's time was counted, block by block")
     ex.add_argument("--session", required=True, help="id or unique prefix")

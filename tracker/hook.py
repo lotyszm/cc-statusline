@@ -111,7 +111,8 @@ def _prompt_context(conn, cfg, session_id, prompt, now):
     cur = ledger.current(conn, cfg, session_id, now)
     if cur is None or not cur.billable:
         return None
-    fresh = [c for c in cfg.prompt_candidates(prompt) if c != cur.task]
+    fresh = [cfg.qualify(cur.client, c) for c in cfg.prompt_candidates(prompt)]
+    fresh = [c for c in fresh if c != cur.task]
     fresh = [c for c in fresh if db.mark_asked(conn, session_id, c, now)]
     if not fresh:
         return None

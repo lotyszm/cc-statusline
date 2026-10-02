@@ -138,7 +138,7 @@ DATA_DIR = (Path(os.environ["CC_STATUSLINE_DATA_DIR"]).expanduser() if os.enviro
 STATUS_DIR = DATA_DIR / "status"
 NO_TRACKING = DATA_DIR / "no-tracking"      # left by --install --no-tracking
 REPO_URL = "https://github.com/lotyszm/cc-statusline"
-TRACKER_COMMANDS = ("report", "sessions", "task", "explain", "status", "import", "dashboard")
+TRACKER_COMMANDS = ("report", "sessions", "task", "tasks", "explain", "status", "import", "dashboard")
 DASHBOARD_PORT = 8765
 
 PRICE_MAP = {}          # model -> [in, out, cache_write_5m, cache_read, cache_write_1h]
@@ -1086,6 +1086,7 @@ script as `cc-statusline`:
   cc-statusline report [--last-month | --month YYYY-MM | --from D --to D] [--format csv|md]
   cc-statusline sessions --unassigned    client time not logged to a task yet
   cc-statusline task set ID --session S  log a session's time to a task
+  cc-statusline tasks set ID --plan @f   describe a task: title, description, plan, status
   cc-statusline explain --session S      how a session's time was counted
   cc-statusline dashboard                open the local dashboard
   cc-statusline import                   backfill from transcripts

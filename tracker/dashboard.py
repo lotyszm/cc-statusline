@@ -49,7 +49,7 @@ def build_report(conn, cfg, start, end):
     split = ledger.allocate(conn, cfg, start, end, "split")
     full = ledger.allocate(conn, cfg, start, end, "full")
     primary = full if cfg.overlap == "full" else split
-    titles = db.task_titles(conn)
+    details = db.task_details(conn)
 
     clients, sessions = {}, {}
     days = defaultdict(lambda: defaultdict(float))      # day -> (client, billable, assigned) -> s
@@ -60,7 +60,9 @@ def build_report(conn, cfg, start, end):
         c = clients.setdefault(key.client, {"client": key.client, "billable": False, "seconds": 0.0,
                                             "full_seconds": 0.0, "amount": None, "tasks": {}})
         c["billable"] = c["billable"] or key.billable
-        t = c["tasks"].setdefault(key.task, {"task": key.task, "title": titles.get(key.task),
+        d = details.get(key.task)
+        t = c["tasks"].setdefault(key.task, {"task": key.task, "title": d["title"] if d else None,
+                                             **{f: d[f] if d else None for f in db.TASK_DETAILS},
                                              "seconds": 0.0, "full_seconds": 0.0, "amount": None,
                                              "sessions": set(), "days": defaultdict(float)})
         c["seconds"] += secs
@@ -225,6 +227,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid = db.find_session(conn, str(body.get("session_id") or ""))
             except LookupError as e:
                 return self._send(404, {"error": str(e)})
+            task = cfg.qualify(cfg.classify(db.session(conn, sid)["project_dir"])[0], task)
             now = time.time()
             effective = db.session(conn, sid)["first_ts"] if body.get("from_start", True) else now
             db.add_assignment(conn, sid, task, effective, "dashboard", now, branch=db.latest_branch(conn, sid))

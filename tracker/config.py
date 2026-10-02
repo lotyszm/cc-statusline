@@ -50,6 +50,8 @@ currency = "PLN"
 # branch_patterns = ['(PROJ-\\d+)']
 # prompt_patterns = ['\\b(PROJ-\\d+)\\b']
 # ignore = ["CR"]
+# namespace = true      # keys become "client:ID" (acme:PROJ-12, globex:48302), so two
+#                       # clients' trackers can use the same numbers without mixing
 """
 
 
@@ -99,6 +101,7 @@ class Config:
         self.branch_patterns = tasks._compiled(t.get("branch_patterns", tasks.BRANCH_PATTERNS))
         self.prompt_patterns = tasks._compiled(t.get("prompt_patterns", tasks.PROMPT_PATTERNS))
         self.ignore = frozenset(k.upper() for k in t.get("ignore", ()))
+        self.namespace = bool(t.get("namespace", False))
         self.rates = {name: c["rate"] for name, c in data.get("clients", {}).items()
                       if isinstance(c, dict) and "rate" in c}
         self._seen = {}
@@ -123,6 +126,15 @@ class Config:
 
     def prompt_candidates(self, text):
         return tasks.prompt_candidates(text, self.prompt_patterns, self.ignore)
+
+    def qualify(self, client, task):
+        """With `namespace`, a bare task id found for a client becomes 'client:id'.
+
+        An id that already names a client, such as one typed in full, stays as it is.
+        """
+        if not (self.namespace and client and task) or ":" in task:
+            return task
+        return f"{client}:{task}"
 
     def rate(self, client):
         return self.rates.get(client)

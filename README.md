@@ -261,6 +261,35 @@ In a billable project, a session's time goes to a task:
 
 `[tasks]` in the config template shows how to change the ID patterns.
 
+### Task keys per client
+
+Two clients can use the same numbers: Redmine `48302` at one, Jira `CMS-100` at another that
+also has a ticket 48302. With `namespace = true` under `[tasks]`, a task found in a branch, a
+prompt or given to `task set` as a bare ID gets the client from the rules in front of it:
+
+```toml
+[tasks]
+namespace = true      # feature/48302/x in ~/dev/clients/globex → globex:48302
+```
+
+A key that already has a `client:` part is kept as typed. Without the option, keys stay bare,
+as before.
+
+### What a task is about
+
+Next to its title, a task can hold a description, a plan, a status and a link to its ticket.
+The dashboard shows them when you open the task, above its hours and session titles.
+
+```sh
+cc-statusline tasks set globex:48302 --title "Checkout rounding" --status open \
+    --url https://redmine.example.com/issues/48302 --plan @plan.md
+cc-statusline tasks show globex:48302
+cc-statusline tasks import tasks.jsonl      # one {"task": ..., "title": ..., "plan": ...} per line
+```
+
+Fields not given are kept, so setting a title never wipes a plan. An import is all or nothing:
+one bad line and no task is changed.
+
 ### Commands
 
 | Command | What it does |
@@ -268,6 +297,7 @@ In a billable project, a session's time goes to a task:
 | `cc-statusline report` | Hours per client and task, this month by default. `--last-month`, `--month 2026-09`, `--from`/`--to`, `--client`, `--by day,client,task`, `--format csv` or `md`. |
 | `cc-statusline sessions --unassigned` | Billable sessions with time not logged to a task. |
 | `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`). `task clear` and `task show` too. |
+| `cc-statusline tasks set ID` | Describes a task: `--title`, `--description`, `--plan`, `--status`, `--url`; `@file` or `-` reads the text. `tasks show`, `tasks list` and `tasks import FILE` too. |
 | `cc-statusline explain --session S` | How a session's time was counted. |
 | `cc-statusline dashboard` | Opens the dashboard, starting it if it is not running. |
 | `cc-statusline import` | Backfills from transcripts. `--install` already does this once. |
