@@ -142,6 +142,13 @@
   .small td, .small th { padding: 4px 6px; font-size: 13px; }
   details.more > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .empty { color: var(--muted); padding: 8px 0; }
+  .pane-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .pencil { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 13px; }
+  .pencil svg { flex: none; }
+  .pencil[aria-expanded="true"] { background: var(--surface-2); }
+  .edit[hidden] { display: none; }
+  .edit .actions { display: flex; justify-content: flex-end; }
+  .edit .cancel { box-shadow: none; background: transparent; color: var(--ink-2); padding: 5px 10px; }
   .edit { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--surface-2); }
   .edit form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .edit label { color: var(--ink-2); min-width: 52px; }
@@ -270,6 +277,34 @@ async function saved(t, message) {
   banner(message, true);
 }
 
+// A pencil, drawn like the dashboard's other inline icons: stroke only, current colour.
+function pencilIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor",
+                                        "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }))
+    svg.setAttribute(k, v);
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M11.2 2.3a1.6 1.6 0 0 1 2.3 2.3L5.4 12.7 2.5 13.5l.8-2.9z M10 3.5l2.5 2.5");
+  svg.append(path);
+  return svg;
+}
+
+// Changing a task takes a deliberate step: the form stays closed until the pencil opens it.
+function editToggle(block) {
+  const btn = el("button", { type: "button", class: "pencil", "aria-expanded": "false", "aria-controls": "task-edit",
+                             title: "Change status or project" }, pencilIcon(), "Change");
+  const close = () => { block.hidden = true; btn.setAttribute("aria-expanded", "false"); block.reset(); };
+  btn.addEventListener("click", () => {
+    if (!block.hidden) { close(); btn.focus(); return; }
+    block.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    block.querySelector("select").focus();
+  });
+  block.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { close(); btn.focus(); } });
+  block.onCancel = () => { close(); btn.focus(); };
+  return btn;
+}
+
 function editBlock(t) {
   const status = el("select", { name: "status", "aria-label": "Status" },
     ...t.statuses.map((s) => el("option", { value: s, text: label(s), selected: s === t.status })));
@@ -315,7 +350,18 @@ function editBlock(t) {
       await saved(next, `${t.task} moved to ${next.task}.`);
     } catch (e) { banner(`Could not move the task: ${e.message}`); btn.disabled = false; }
   });
-  return el("div", { class: "edit", role: "group", "aria-label": "Change the task" }, statusForm, moveForm);
+  const block = el("div", { class: "edit", id: "task-edit", role: "group", "aria-label": "Change the task", hidden: true },
+    statusForm, moveForm);
+  const cancel = el("button", { type: "button", class: "cancel", text: "Cancel" });
+  cancel.addEventListener("click", () => block.onCancel());
+  block.append(el("div", { class: "actions" }, cancel));
+  // Closing puts every field back the way the task has it, so nothing half-edited is left behind.
+  block.reset = () => {
+    for (const f of [statusForm, moveForm]) f.reset();
+    status.dispatchEvent(new Event("change"));
+    project.dispatchEvent(new Event("change"));
+  };
+  return block;
 }
 
 // The view lives in the URL, so a reload, a bookmark or a link from the time page comes back to it.
@@ -420,6 +466,7 @@ const listSection = (title, items, mono = false) => items && items.length
   ? section(title, el("ul", { class: "plain" }, ...items.map((x) => el("li", { class: mono ? "mono" : null, text: String(x) })))) : null;
 
 function renderTask(t) {
+  const edit = editBlock(t);
   const link = webUrl(t.ticket_url);
   const facts = [chip(t.status), el("span", { text: t.kind }), prio(t.priority),
     t.area ? el("span", { text: `area: ${t.area}` }) : null,
@@ -445,12 +492,12 @@ function renderTask(t) {
       el("td", { class: "muted", text: h.before != null ? `${h.before} → ${h.after ?? ""}` : (h.after ?? "") })))))) : null;
 
   $("detail").replaceChildren(...[
-    el("div", { class: "mono key", text: t.task }),
+    el("div", { class: "pane-head" }, el("div", { class: "mono key", text: t.task }), editToggle(edit)),
     el("h2", { text: t.title || t.task }),
     el("div", { class: "facts" }, ...facts),
     el("div", { class: "muted", text: dates }),
     t.moved_from && t.moved_from.length ? el("div", { class: "muted mono", text: `moved from ${t.moved_from.join(", ")}` }) : null,
-    editBlock(t),
+    edit,
     t.next_step && t.status !== "done" ? section("Next step", el("p", { class: "text next", text: t.next_step })) : null,
     textSection("Criteria", t.criteria),
     textSection("Description", t.description),
