@@ -22,7 +22,23 @@ they show what the same usage would have cost through the API.
 """
 
 __author__ = "Maciej Łotysz"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+import sys
+import time
+
+T0 = time.time()                    # when a hook fired, taken before the other imports
+
+if __name__ == "__main__" and sys.argv[1:2] == ["hook"]:
+    # A Claude Code hook (time tracking): record the event and get out of the
+    # way before the status line's own imports. It must never fail a session.
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    try:
+        from tracker import hook
+    except Exception:
+        sys.exit(0)
+    sys.exit(hook.main(now=T0))
 
 import hashlib
 import json
@@ -30,8 +46,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +59,8 @@ BAR_STYLE = "solid"             # "solid": bars drawn with background colour, wh
                                 # stays opaque on translucent terminals.
                                 # "ascii": drawn with █ glyphs instead.
 SHOW_GIT = True                 # show branch, read straight from .git/HEAD
+SHOW_TIME = True                # show the task and today's tracked time (see Time
+                                # tracking in the README); absent when not tracked
 
 # 256-colour palette. Higher index means lighter in the 232-255 greyscale ramp.
 # Preview:  for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done
@@ -52,6 +68,7 @@ C_LABEL, C_SEP, C_VALUE, C_MONEY = 245, 242, 252, 221
 C_MODEL, C_PATH, C_GIT, C_MUTED = 81, 111, 176, 245
 C_ACCOUNT = 209                 # account tag, shown when the dir is not ~/.claude
 C_WARN = 214
+C_TASK = 115                    # time-tracking segment
 BAR_OK, BAR_WARN, BAR_HOT = 77, 214, 203    # thresholds are 70% and 90%
 BAR_TRACK = 238                 # empty part of the bar; raise it on light themes
 
@@ -87,11 +104,13 @@ LABELS = {
     "en": {"session": "session", "project": "project", "total": "all",
            "new_dir": "new directory", "no_limit": "limit n/a", "tok": "tok",
            "no_prices": "no price data", "stale": "prices {d}d old",
-           "unpriced": "unpriced model"},
+           "unpriced": "unpriced model", "no_task": "no task",
+           "run_install": "run --install"},
     "pl": {"session": "sesja", "project": "projekt", "total": "razem",
            "new_dir": "nowy katalog", "no_limit": "limit n/d", "tok": "tok",
            "no_prices": "brak cennika", "stale": "cennik {d}d",
-           "unpriced": "model spoza cennika"},
+           "unpriced": "model spoza cennika", "no_task": "bez zadania",
+           "run_install": "uruchom --install"},
 }
 
 # ══════════════════════════════ PATHS AND STATE ════════════════════════════
@@ -108,6 +127,19 @@ PRICES_FILE = CACHE_ROOT / "prices.json"
 LOCK_FILE = CACHE_ROOT / "refresh.lock"
 CACHE_FILE = CACHE_ROOT / "scan-claude.json"
 LIMITS_FILE = CACHE_ROOT / "limits-claude.json"
+
+# Time tracking lives in tracker/ next to this file: a git clone has it, a
+# download of statusline.py alone does not. Its hooks write one small JSON file
+# per session to STATUS_DIR. tracker/paths.py resolves the same directories.
+HERE = Path(os.path.realpath(__file__)).parent
+TRACKER_DIR = HERE / "tracker"
+DATA_DIR = (Path(os.environ["CC_STATUSLINE_DATA_DIR"]).expanduser() if os.environ.get("CC_STATUSLINE_DATA_DIR")
+            else Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "cc-statusline")
+STATUS_DIR = DATA_DIR / "status"
+NO_TRACKING = DATA_DIR / "no-tracking"      # left by --install --no-tracking
+REPO_URL = "https://github.com/lotyszm/cc-statusline"
+TRACKER_COMMANDS = ("report", "sessions", "task", "explain", "status", "import", "dashboard")
+DASHBOARD_PORT = 8765
 
 PRICE_MAP = {}          # model -> [in, out, cache_write_5m, cache_read, cache_write_1h]
 PRICES_AGE = None       # seconds since the last successful fetch, None if never
@@ -500,6 +532,56 @@ def git_branch(start):
     return None
 
 
+def tracker_status(session_id):
+    """Today's tracked time for this session, or None when it is not tracked.
+
+    The hooks keep the file current, so reading it costs one small file read and
+    the status line never touches the database.
+    """
+    if not (SHOW_TIME and session_id):
+        return None
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
+    try:
+        st = json.loads((STATUS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return st if isinstance(st, dict) else None
+
+
+def tracking_unavailable():
+    """Why time tracking cannot run with this copy and interpreter, or None."""
+    if not TRACKER_DIR.is_dir():
+        return ("time tracking needs the tracker/ folder next to statusline.py; "
+                f"get the whole repository: git clone {REPO_URL}")
+    if sys.version_info < (3, 9):
+        return f"time tracking needs Python 3.9 or newer (this is {sys.version.split()[0]})"
+    return None
+
+
+def tracker(name):
+    """A module of the time tracker, or None when it cannot run here."""
+    if tracking_unavailable():
+        return None
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+    import importlib
+    return importlib.import_module(f"tracker.{name}")
+
+
+def hooks_wired(account_dir):
+    """True when the account's settings.json runs the time-tracking hook.
+
+    Same test as tracker/install.py, repeated here so rendering never imports
+    the tracker.
+    """
+    try:
+        hooks = json.loads((Path(account_dir) / "settings.json").read_text(encoding="utf-8")).get("hooks")
+        return any(str(h.get("command", "")).rstrip().endswith('statusline.py" hook')
+                   for groups in hooks.values() for g in groups for h in g.get("hooks", []))
+    except Exception:
+        return False
+
+
 # ══════════════════════════════ FORMATTING ═════════════════════════════════
 
 R, B = "\033[0m", "\033[1m"
@@ -658,6 +740,21 @@ def render(data):
     br = git_branch(cwd) if SHOW_GIT else None
     if br:
         head.append(fg(C_GIT, f"⑂ {br}"))
+    st = tracker_status(data.get("session_id"))
+    if st:
+        # Today's time on the task across sessions, or on the project without one.
+        s = int(st.get("seconds") or 0)
+        if st.get("day") not in (None, datetime.now().strftime("%Y-%m-%d")):
+            s = 0                       # computed before midnight; refreshed on the next event
+        spent = f"{s // 3600}h {(s % 3600) // 60}m" if s >= 3600 else f"{s // 60}m"
+        if st.get("task"):
+            head.append(fg(C_TASK, f"⏱ {st['task']} {spent}"))
+        elif st.get("billable"):
+            head.append(fg(C_WARN, f"⏱ {L('no_task')} {spent}"))
+        else:
+            head.append(fg(C_MUTED, f"⏱ {spent}"))
+    elif SHOW_TIME and TRACKER_DIR.is_dir() and not NO_TRACKING.exists() and not hooks_wired(CLAUDE_DIR):
+        head.append(fg(C_MUTED, f"⏱ {L('run_install')}"))   # updated, hooks not set up yet
     head.append(fg(C_MUTED, L("new_dir") if pkey is None
                   else f"{L('project')} {usd(pc)} / {tok(pt)}"))
     if PRICES_AGE is None:
@@ -729,48 +826,155 @@ def render(data):
 SETTINGS_ENTRY = {"type": "command", "padding": 1, "refreshInterval": 30}
 
 
-def cmd_install(targets=None):
-    """Write the statusLine entry into every account's settings.json."""
+def read_settings(path):
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(data, dict):
+        raise ValueError("settings.json is not a JSON object")
+    return data
+
+
+def update_settings(acc, change, out):
+    """Apply change() to the account's settings.json: one backup, atomic write."""
+    settings = acc / "settings.json"
+    try:
+        current = read_settings(settings)
+    except Exception as e:
+        print(f"  {acc}: skipped, cannot read settings.json ({e})", file=out)
+        return
+    new = change(json.loads(json.dumps(current)))
+    if new == current:
+        print(f"  {settings}  (unchanged)", file=out)
+        return
+    backup = None
+    if settings.exists():
+        stamp, n = int(time.time()), 0
+        backup = settings.with_suffix(f".json.bak-{stamp}")
+        while backup.exists():
+            n += 1
+            backup = settings.with_suffix(f".json.bak-{stamp}-{n}")
+        shutil.copy2(settings, backup)
+    acc.mkdir(parents=True, exist_ok=True)
+    tmp = settings.with_suffix(f".json.tmp{os.getpid()}")
+    tmp.write_text(json.dumps(new, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(settings)
+    print(f"  {settings}  " + (f"(backup: {backup.name})" if backup else "(created)"), file=out)
+
+
+def cmd_install(targets=None, tracking=True, dashboard=True, history=True, python=None, out=None):
+    """The statusLine entry in every account's settings.json, and time tracking
+    when tracker/ is here: hooks, the cc-statusline command, the dashboard."""
+    out = out or sys.stdout
     me = os.path.realpath(__file__)
     accounts = [Path(t).expanduser() for t in targets] if targets else find_accounts()
     if not accounts:
         print("no Claude Code account directory found under ~", file=sys.stderr)
         return 1
 
-    for acc in accounts:
-        settings = acc / "settings.json"
-        try:
-            current = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
-            if not isinstance(current, dict):
-                raise ValueError("settings.json is not a JSON object")
-        except Exception as e:
-            print(f"  {acc}: skipped, cannot read settings.json ({e})", file=sys.stderr)
-            continue
+    why_not = tracking_unavailable()
+    ins = tracker("install")
+    hook_python = python or (ins.stable_python() if ins else sys.executable)
 
-        if settings.exists():
-            backup = settings.with_suffix(f".json.bak-{int(time.time())}")
-            shutil.copy2(settings, backup)
-        else:
-            backup = None
-
+    def change(s):
         # Quoted: Claude Code runs this through a shell and the path may
         # contain spaces.
-        current["statusLine"] = dict(SETTINGS_ENTRY, command=f'python3 "{me}"')
-        acc.mkdir(parents=True, exist_ok=True)
-        settings.write_text(json.dumps(current, indent=2, ensure_ascii=False) + "\n",
-                            encoding="utf-8")
-        note = f" (backup: {backup.name})" if backup else " (created)"
-        print(f"  {settings}{note}")
+        s["statusLine"] = dict(SETTINGS_ENTRY, command=f'python3 "{me}"')
+        if ins and tracking:
+            ins.wire(s, ins.command(hook_python))
+        elif ins:
+            ins.unwire(s)
+        return s
+
+    print("settings:", file=out)
+    for acc in accounts:
+        update_settings(acc, change, out)
 
     try:
         n, _ = fetch_prices()
-        print(f"\nprices: {n} models fetched")
+        print(f"prices:    {n} models fetched", file=out)
     except Exception as e:
-        print(f"\nprices: fetch failed ({e}); falling back to built-in rates "
-              f"until the next attempt", file=sys.stderr)
+        print(f"prices:    fetch failed ({e}); built-in rates until the next attempt", file=out)
 
-    print("\nRestart Claude Code to pick up the status line.")
+    if ins is None:
+        print(f"tracking:  off: {why_not}", file=out)
+    elif not tracking:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        NO_TRACKING.write_text("set by statusline.py --install --no-tracking\n", encoding="utf-8")
+        tracker("autostart").disable(out=out)
+        print(f"tracking:  off (--no-tracking); recorded time stays in {DATA_DIR}", file=out)
+    else:
+        try:
+            NO_TRACKING.unlink()
+        except OSError:
+            pass
+        print(f"tracking:  hooks run {hook_python}", file=out)
+        ins.setup(hook_python, out=out)
+        if history:
+            importer, db = tracker("importer"), tracker("db")
+            conn = db.connect()
+            try:
+                stats = importer.run(conn, accounts, progress=lambda m: print(m, file=out))
+            finally:
+                conn.close()
+            print(f"history:   {stats['events']} events from {stats['files']} transcripts "
+                  f"({stats['skipped_files']} unchanged)", file=out)
+        autostart = tracker("autostart")
+        if dashboard:
+            autostart.enable(hook_python, me, DASHBOARD_PORT, out=out)
+        elif not autostart.disable(out=out):
+            print("dashboard: not started at login (--no-dashboard); `cc-statusline dashboard` opens it",
+                  file=out)
+
+    print("\nRestart Claude Code: running sessions keep the settings they started with.", file=out)
     return 0
+
+
+def cmd_uninstall(targets=None, out=None):
+    """Remove what --install added. Recorded time and the config stay."""
+    out = out or sys.stdout
+    me = os.path.realpath(__file__)
+    accounts = [Path(t).expanduser() for t in targets] if targets else find_accounts()
+    ins = tracker("install")
+
+    def change(s):
+        line = s.get("statusLine")
+        if isinstance(line, dict) and me in str(line.get("command", "")):
+            del s["statusLine"]
+        if ins:
+            ins.unwire(s)
+        return s
+
+    print("settings:", file=out)
+    for acc in accounts:
+        update_settings(acc, change, out)
+    if ins:
+        ins.remove_link(out=out)
+        tracker("autostart").disable(out=out)
+        print(f"\nRecorded time stays in {DATA_DIR} and the config in {tracker('paths').config_path()};"
+              " delete them yourself if you do not need them.", file=out)
+    return 0
+
+
+def doctor_tracking(accounts):
+    """The time-tracking lines of --doctor. True when nothing needs attention."""
+    why_not = tracking_unavailable()
+    if why_not:
+        print(f"tracking      off: {why_not}")
+        return True
+    if NO_TRACKING.exists():
+        print("tracking      off (--install --no-tracking)")
+        return True
+    cfg = tracker("config").load()
+    conn = tracker("db").connect()
+    try:
+        ok = tracker("install").doctor(conn, cfg, time.time(), accounts, out=sys.stdout)
+    finally:
+        conn.close()
+    auto = tracker("autostart").status()
+    up = tracker("dashboard").answers(DASHBOARD_PORT)
+    service = (f"autostart {auto['manager']} ({'running' if auto['running'] else 'not running'})"
+               if auto["installed"] else "no autostart")
+    print(f"dashboard     http://127.0.0.1:{DASHBOARD_PORT}/ {'answering' if up else 'not answering'} · {service}")
+    return ok and (up or not auto["installed"])
 
 
 def cmd_doctor():
@@ -806,6 +1010,8 @@ def cmd_doctor():
         print(f"account       {acc}  ({sessions} sessions, {wired})")
         if not linked:
             ok = False
+
+    ok = doctor_tracking(accounts) and ok
 
     set_config_dir(accounts[0] if accounts else Path.home() / ".claude")
     load_prices()
@@ -861,7 +1067,12 @@ HELP = f"""\
 Claude Code status line {__version__} — {__author__}
 
   statusline.py                      render (reads the session JSON on stdin)
-  statusline.py --install [DIR ...]  add the statusLine entry to settings.json
+  statusline.py --install [DIR ...]  set up the status line and time tracking
+      --no-tracking                    status line only (removes the hooks)
+      --no-dashboard                   do not start the dashboard at login
+      --no-import                      do not import past transcripts
+      --python=PATH                    interpreter for the hooks
+  statusline.py --uninstall [DIR ...]  remove what --install added; data stays
   statusline.py --doctor             check the setup and report timings
   statusline.py --prices             show the rate table in use
   statusline.py --refresh-prices     fetch rates now and show what changed
@@ -869,27 +1080,57 @@ Claude Code status line {__version__} — {__author__}
   statusline.py --config-dir=DIR     force an account dir instead of detecting
   statusline.py --help               this summary
 
+Time tracking needs the tracker/ folder of the repository. --install links this
+script as `cc-statusline`:
+
+  cc-statusline report [--last-month | --month YYYY-MM | --from D --to D] [--format csv|md]
+  cc-statusline sessions --unassigned    client time not logged to a task yet
+  cc-statusline task set ID --session S  log a session's time to a task
+  cc-statusline explain --session S      how a session's time was counted
+  cc-statusline dashboard                open the local dashboard
+  cc-statusline import                   backfill from transcripts
+  cc-statusline COMMAND --help           all options
+
 --install detects account directories under ~ (.claude, .claude-work, ...) and
 backs up each settings.json before writing. Pass directories to override.
 
 Prices refresh themselves once a day in the background, so no cron or launchd
-job is needed. Edit the CONFIGURATION block at the top for layout and colours.
+job is needed. Edit the CONFIGURATION block at the top for layout and colours;
+time tracking reads ~/.config/cc-statusline/config.toml.
 """
 
 
-def main():
-    argv = sys.argv[1:]
-    flags = {a for a in argv if a.startswith("-")}
-    rest = [a for a in argv if not a.startswith("-")]
-    cfg_arg = next((a.split("=", 1)[1] for a in argv if a.startswith("--config-dir=")), None)
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] and argv[0] in TRACKER_COMMANDS:
+        cli = tracker("cli")
+        if cli is None:
+            print(f"cc-statusline: {tracking_unavailable()}", file=sys.stderr)
+            return 1
+        return cli.main(argv)
 
-    if "--help" in flags or "-h" in flags:
+    flags = {a.split("=", 1)[0] for a in argv if a.startswith("-")}
+    rest = [a for a in argv if not a.startswith("-")]
+
+    def option(name):
+        return next((a.split("=", 1)[1] for a in argv if a.startswith(name + "=")), None)
+
+    cfg_arg = option("--config-dir")
+
+    if "--help" in flags or "-h" in flags or (not argv and sys.stdin is not None and sys.stdin.isatty()):
         print(HELP)
+        return 0
+    if "--version" in flags:
+        print(f"cc-statusline {__version__}")
         return 0
     if "--refresh-prices" in flags:
         return cmd_refresh("--quiet" in flags)
     if "--install" in flags:
-        return cmd_install(rest or None)
+        return cmd_install(rest or None, tracking="--no-tracking" not in flags,
+                           dashboard="--no-dashboard" not in flags, history="--no-import" not in flags,
+                           python=option("--python"))
+    if "--uninstall" in flags:
+        return cmd_uninstall(rest or None)
 
     set_config_dir(cfg_arg or (rest[0] if rest and "--clear-cache" in flags else None)
                    or os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))

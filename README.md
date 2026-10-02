@@ -1,19 +1,22 @@
 # cc-statusline
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 A status line for [Claude Code](https://claude.com/claude-code). It shows how full your
 context window is, what the current session and the current project have cost, and how much
-of your 5-hour and 7-day limits you have used.
+of your 5-hour and 7-day limits you have used. It also tracks how long you work with Claude
+Code per client, project, branch and task, so you can bill for it, and shows that time in the
+line and in a local dashboard.
 
 ![cc-statusline running in a Claude Code session](assets/s1.png)
 
-It is one Python file with no dependencies beyond `python3`. It reads the transcripts Claude
-Code already writes to disk, prices them with the public LiteLLM rate table, and updates that
-table once a day on its own. There is no cron job to set up and nothing to install alongside it.
+Everything runs on your machine with nothing but `python3`. The status line reads the
+transcripts Claude Code already writes to disk and prices them with the public LiteLLM rate
+table, which it updates once a day on its own. Time tracking records Claude Code's hook events
+in a local SQLite database. There is no daemon, no Docker and no account to sign up for.
 
 > [!IMPORTANT]
 > **Every cost and token count here is an estimate**, worked out on your own machine at API
@@ -28,57 +31,79 @@ table once a day on its own. There is no cron job to set up and nothing to insta
 - **Project** — what this working directory has cost in total, and inside each limit window.
 - **Account** — what every session on the account spent inside the 5-hour and 7-day windows.
 - **Limits** — how much of each window you have used, and when it resets.
+- **Time** — the current task and today's time on it (see [Time tracking](#time-tracking)).
 
 ## Install
-
-**1. Get the file**
-
-```sh
-curl -O https://raw.githubusercontent.com/lotyszm/cc-statusline/main/statusline.py
-```
-
-Or clone the repository:
 
 ```sh
 git clone https://github.com/lotyszm/cc-statusline.git
 cd cc-statusline
-```
-
-**2. Run the installer**
-
-```sh
 python3 statusline.py --install
 ```
 
-It does three things:
+Then restart Claude Code: it reads `settings.json` only at startup.
+
+`--install` does the following, and is safe to run again at any time:
 
 - finds every Claude Code account directory in your home folder (`.claude`, `.claude-work`, …)
-- backs up each `settings.json`, then adds the `statusLine` entry to it
+- backs up each `settings.json`, then adds the `statusLine` entry and the time-tracking hooks
 - downloads the price table once, so the very first render already has real rates
+- links the script as `~/.local/bin/cc-statusline` and writes a config template to
+  `~/.config/cc-statusline/config.toml`
+- imports the transcripts Claude Code still keeps (30 days by default), so reports have history
+  from the start
+- starts the dashboard at login on <http://127.0.0.1:8765/> (launchd on macOS, a systemd user
+  unit on Linux)
+
+| Option | Effect |
+| --- | --- |
+| `--no-tracking` | Status line only. Removes the time-tracking hooks if they were there. |
+| `--no-dashboard` | Does not start the dashboard at login; `cc-statusline dashboard` opens it when you want it. |
+| `--no-import` | Skips importing past transcripts (`cc-statusline import` does it later). |
+| `--python=PATH` | The interpreter the hooks run with. By default the one running `--install`. |
+| `DIR ...` | Account folders to set up, instead of all of them. |
 
 A folder counts as an account if it contains a `projects/` folder or a `settings.json`, so an
-account you have set up but never used is found as well. To choose the folders yourself, pass
-them as arguments:
-
-```sh
-python3 statusline.py --install ~/.claude-work
-```
-
-**3. Restart Claude Code.** It reads `settings.json` only at startup.
+account you have set up but never used is found as well.
 
 > [!NOTE]
-> `--install` writes the absolute path of the file into `settings.json`. Keep `statusline.py`
-> where it is, or run `--install` again after moving it.
+> `--install` writes the absolute path of `statusline.py` into `settings.json`. Keep the
+> folder where it is, or run `--install` again after moving it.
+
+### Only the status line
+
+The status line is a single file and works on its own:
+
+```sh
+curl -O https://raw.githubusercontent.com/lotyszm/cc-statusline/main/statusline.py
+python3 statusline.py --install
+```
+
+That gives you everything except time tracking, which needs the `tracker/` folder of the
+repository. `--install` and `--doctor` say so, and the status line never nags about it.
+
+### Updating
+
+```sh
+cd cc-statusline
+git pull
+python3 statusline.py --install
+```
+
+An update never changes your settings on its own. If a new version brings something that needs
+the installer, such as the time-tracking hooks, the status line shows a dim `⏱ run --install`
+until you run it.
 
 ### Requirements
 
-- Python 3.8 or newer — the one that ships with macOS or your distribution is fine
+- Python 3.9 or newer — the one that ships with macOS or your distribution is fine
 - a terminal with 256-colour support
 - macOS or Linux (Windows is untested)
 
 ### Manual setup
 
-If you would rather not run the installer, add this to `~/.claude/settings.json` yourself:
+If you would rather not run the installer, add this to `~/.claude/settings.json` yourself. It
+sets up the status line only:
 
 ```json
 {
@@ -96,7 +121,7 @@ If you would rather not run the installer, add this to `~/.claude/settings.json`
 ### The header
 
 ```
-Opus 5 · max · ai/statusline · ⑂ main · project $5.66 / 5.04M
+Opus 5 · max · ai/statusline · ⑂ main · ⏱ 12345 1h 35m · project $5.66 / 5.04M
 ```
 
 | Part | Meaning |
@@ -106,6 +131,7 @@ Opus 5 · max · ai/statusline · ⑂ main · project $5.66 / 5.04M
 | `max` | Reasoning effort. |
 | `ai/statusline` | Working directory, shortened to its last two parts. |
 | `⑂ main` | Git branch, when you are inside a repository. |
+| `⏱ 12345 1h 35m` | The current task and today's time on it, across sessions. Without a task: today's time on the project; `⏱ no task` turns amber in a billable project. |
 | `project $5.66 / 5.04M` | What this project has cost in total, in dollars and tokens. Reads `new directory` when the project has no transcripts yet. |
 
 Warnings are appended to the same line:
@@ -115,6 +141,7 @@ Warnings are appended to the same line:
 | `⚠ no price data` | The price table has never been downloaded. |
 | `⚠ prices 5d old` | No download has succeeded for 5 days. |
 | `⚠ unpriced model` | A model used **in this project** is missing from the price table, so its rates are guessed. |
+| `⏱ run --install` | Time tracking is here but its hooks are not set up yet, usually right after an update. |
 
 ### The `ctx` row
 
@@ -182,6 +209,93 @@ count next to each cost, and the session duration on the `ctx` row.
 
 Bars turn amber at 70% and red at 90%.
 
+## Time tracking
+
+Claude Code runs a hook at every step of a session: when you send a prompt, when a tool starts
+and ends, when it waits for your permission, when a reply is done. `--install` points those
+hooks at `statusline.py hook`, which writes one row per event to a local SQLite database.
+Reports are worked out from those raw events every time, so a change in the settings applies
+to past days as well.
+
+### How time is counted
+
+- Time is the gaps between one session's events. A gap longer than **15 minutes** is a break
+  and does not count; time you spend reading a reply and writing back within that counts.
+- A running tool, such as a test suite or a build, counts until it ends, for at most
+  **60 minutes**.
+- Days are split at local midnight.
+- Parallel sessions (`overlap = "split"`, the default): sessions for clients share the clock,
+  so two sessions side by side do not bill the same hour twice, and your own projects get
+  time only while no client session is active. `overlap = "full"` counts every session in full.
+- `cc-statusline explain --session ID` shows how one session's time was counted, block by
+  block, with every break.
+
+### Clients and tasks
+
+Rules in `~/.config/cc-statusline/config.toml` map a working directory to a client. Without any
+rule, time adds up per project and the agent is never asked about tasks.
+
+```toml
+[[rule]]
+path = "~/dev/clients/{client}/**"     # the folder name becomes the client
+billable = true
+
+[[rule]]
+path = "~/dev/side-projects/**"
+client = "own"
+billable = false
+
+[clients.acme]
+rate = 150                              # optional: adds an amount column to reports
+```
+
+In a billable project, a session's time goes to a task:
+
+- **From the branch** — a number in the branch name (`feature/12345/checkout`) or a Jira-style
+  key (`PROJ-123`).
+- **From the conversation** — when a prompt mentions something that looks like a task ID, the
+  agent asks once, at the end of its reply, whether to log this session to it, and on your
+  confirmation runs `cc-statusline task set`. Saying "this is task 12345" is enough.
+- **Later** — the dashboard and `cc-statusline sessions --unassigned` list billable time without
+  a task, and you can assign it there.
+
+`[tasks]` in the config template shows how to change the ID patterns.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `cc-statusline report` | Hours per client and task, this month by default. `--last-month`, `--month 2026-09`, `--from`/`--to`, `--client`, `--by day,client,task`, `--format csv` or `md`. |
+| `cc-statusline sessions --unassigned` | Billable sessions with time not logged to a task. |
+| `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`). `task clear` and `task show` too. |
+| `cc-statusline explain --session S` | How a session's time was counted. |
+| `cc-statusline dashboard` | Opens the dashboard, starting it if it is not running. |
+| `cc-statusline import` | Backfills from transcripts. `--install` already does this once. |
+
+`S` is a session ID or a unique prefix of one. Every command takes `--help`.
+
+### Dashboard
+
+<http://127.0.0.1:8765/> shows hours per day, per client and per task, what was done in each
+session, and the time still waiting for a task, which you can assign from there. The CSV export
+matches `cc-statusline report`.
+
+`--install` starts it at login. It listens on 127.0.0.1 only and reads the database on every
+request, so it never shows stale numbers. To drive it by hand, or after `--no-dashboard`, use
+`bin/dashboard.sh start|stop|restart|status|logs`.
+
+### Files
+
+| Path | What it holds |
+| --- | --- |
+| `~/.config/cc-statusline/config.toml` | Rules, rates, the break and tool limits. |
+| `~/.local/share/cc-statusline/tracker.db` | The events, sessions and task assignments. |
+| `~/.local/share/cc-statusline/status/` | One small file per session, read by the status line. |
+| `~/.local/share/cc-statusline/hook.log` | Hook errors. Hooks never fail a session; they log here. |
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` move these, and `CC_STATUSLINE_CONFIG` and
+`CC_STATUSLINE_DATA_DIR` point at a single file and folder.
+
 ## Costs and tokens are estimates
 
 Claude Code does not tell the script what anything costs. The script adds up the `usage`
@@ -196,7 +310,8 @@ below follows from that.
 - **Project history reaches back only as far as your transcripts do.** Claude Code deletes
   session data older than `cleanupPeriodDays`, which is 30 days by default. Once a transcript
   is deleted its cost disappears from the project total as well. Raise that setting in
-  `settings.json` if you want a longer history.
+  `settings.json` if you want a longer history. Tracked time is kept in the database and is not
+  affected.
 - **A few requests are counted twice.** Retries are removed inside a single transcript, but
   resuming a session copies part of the history into a new file. Measured against the
   transcripts this was built on, that came to roughly 1%.
@@ -216,17 +331,21 @@ accounting for the current session; this counts every transcript still on disk.
 | Command | What it does |
 | --- | --- |
 | `statusline.py` | Renders the line. Reads the session JSON on stdin — this is the call Claude Code makes. |
-| `--install [DIR ...]` | Adds the `statusLine` entry to each account's `settings.json`. |
-| `--doctor` | Checks the setup: prices, accounts, wiring, and how long a render takes. |
+| `--install [DIR ...]` | Sets up the status line and time tracking. See [Install](#install) for the options. |
+| `--uninstall [DIR ...]` | Removes what `--install` added. Recorded time and the config stay. |
+| `--doctor` | Checks the setup: prices, accounts, hooks, the database, the dashboard, and how long a render takes. |
 | `--prices` | Prints the rate table currently in use. |
 | `--refresh-prices` | Downloads rates now and shows what changed since the last download. |
 | `--clear-cache [DIR]` | Deletes one account's scan cache, shared limit readings and refresh lock. |
 | `--config-dir=DIR` | Forces a specific account folder instead of detecting one. `--doctor` ignores this and always reports on every account it finds. |
 | `--help` | Short usage summary. |
 
+The time-tracking commands are listed under [Time tracking](#commands).
+
 ## Configuration
 
-Everything you can tune sits in the `CONFIGURATION` block at the top of the file:
+The status line is tuned in the `CONFIGURATION` block at the top of `statusline.py`; time
+tracking in `config.toml` (see [Clients and tasks](#clients-and-tasks)).
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -235,6 +354,7 @@ Everything you can tune sits in the `CONFIGURATION` block at the top of the file
 | `BAR_W` | `10` | Bar width, in characters. |
 | `BAR_STYLE` | `"solid"` | `"solid"` paints the bar with a background colour, which stays opaque on a transparent terminal. `"ascii"` draws `█` characters instead. |
 | `SHOW_GIT` | `True` | The branch is read straight from `.git/HEAD`; no `git` process is started. |
+| `SHOW_TIME` | `True` | The `⏱` segment. It reads one small file per session and never the database. |
 | `C_*`, `BAR_*` | — | 256-colour numbers. Preview the grey ramp with `for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done` |
 
 `PRICES_TTL`, `PRICES_WARN_AFTER`, `REFRESH_LOCK_TTL` and `RECENT_DAYS` sit just below the
@@ -285,20 +405,38 @@ Caches live in `$XDG_CACHE_HOME/cc-statusline`, or `~/.cache/cc-statusline`:
 **Multiple accounts.** The account folder is worked out from `transcript_path` in the data
 Claude Code sends on stdin, so it is correct whether or not `CLAUDE_CONFIG_DIR` reaches the
 subprocess. Several accounts can run side by side: each gets its own scan cache and its own
-shared limit readings, and any account other than `~/.claude` is tagged in the header.
+shared limit readings, and any account other than `~/.claude` is tagged in the header. Time
+tracking records every account into the same database.
+
+**Hooks.** A hook has to be quick and must never break a session. `statusline.py hook` reads
+the event before importing anything else, writes one row (the database runs in WAL mode, so
+parallel sessions do not block each other), and exits with status 0 even when something goes
+wrong, logging the error to `hook.log`. The status line itself never opens the database: the
+hooks keep a small status file per session, and that is what it reads.
 
 ## Privacy
 
-The script reads only files that are already on your disk. It makes exactly one outgoing
-request, to `raw.githubusercontent.com`, for the price table. Nothing from your sessions or
-your code ever leaves the machine.
+Everything stays on your machine. The script makes exactly one outgoing request, to
+`raw.githubusercontent.com`, for the price table. Time tracking stores timestamps, session
+IDs, working directories, branch names, tool names, task IDs and a short title per session
+(the first line of your first prompt, or the title Claude Code generates). It does not store
+your prompts or code. The dashboard listens on 127.0.0.1 only and refuses requests for any
+other host name.
 
 ## Troubleshooting
 
 Start with `--doctor`. It reports which Python is running, how fresh the prices are, every
-account it found and whether that account points at *this* file, plus render timings.
+account it found and whether that account points at *this* file, whether the time-tracking
+hooks are set up, the database, the dashboard, plus render timings.
 
 **Nothing appears.** Restart Claude Code — `settings.json` is read only at startup.
+
+**`⏱ run --install`.** The repository has time tracking, but this account's hooks are not set
+up. Run `python3 statusline.py --install` and restart Claude Code. To keep the status line
+without tracking, run `--install --no-tracking` instead.
+
+**No `⏱` in a session.** Sessions that were already running when you installed keep their old
+settings. Restart them.
 
 **Bars are invisible or washed out.** On a transparent terminal, keep `BAR_STYLE = "solid"`.
 If the empty part of the bar disappears into your background, raise or lower `BAR_TRACK`. On
@@ -313,16 +451,26 @@ a light theme, the grey defaults (`C_SEP`, `C_MUTED`, `BAR_TRACK`) are the first
 
 ## Uninstall
 
-1. Remove the `statusLine` key from each `settings.json`. `--install` left a
-   `settings.json.bak-<timestamp>` file next to it.
-2. Delete the cache folder: `rm -rf ~/.cache/cc-statusline` (or `$XDG_CACHE_HOME/cc-statusline`).
-3. Delete `statusline.py`.
-4. Restart Claude Code.
+```sh
+python3 statusline.py --uninstall
+```
+
+It removes the `statusLine` entry, the hooks, the permission rule, the `cc-statusline` link and
+the dashboard autostart, backing up each `settings.json` first. Your recorded time stays; delete
+`~/.local/share/cc-statusline`, `~/.config/cc-statusline` and `~/.cache/cc-statusline` yourself
+if you do not need them. Then delete the repository and restart Claude Code.
 
 ## Contributing
 
-Issues and pull requests are welcome. It is a single file — open it and start at the
-`CONFIGURATION` block.
+Issues and pull requests are welcome. The status line is `statusline.py` — open it and start at
+the `CONFIGURATION` block. Time tracking lives in `tracker/`. The tests need nothing but Python:
+
+```sh
+python3 -m unittest discover -s tests -t .
+```
+
+They include a check that recounts random sessions second by second and compares the result
+with the time the tracker reports.
 
 ## License
 

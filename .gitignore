@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Local design notes, not published
+docs/superpowers/
