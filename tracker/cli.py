@@ -3,12 +3,13 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, db, ledger, report, status
+from . import config, db, ledger, report, status, worklist
 
 
 # ── dates ────────────────────────────────────────────────────────────────────
@@ -128,38 +129,191 @@ def _text(value):
     return value
 
 
+LIST_FLAGS = {"pitfalls": "pitfall", "files": "file", "commits": "commit", "depends_on": "depends_on"}
+LONG_FIELDS = ("description", "plan", "evidence", "next_step", "outcome", "tests", "criteria")
+
+
 def _task_fields(args):
-    return {f: _text(getattr(args, f)) for f in ("title", *db.TASK_DETAILS)}
+    fields = {f: _text(getattr(args, f, None)) for f in ("title", *db.TASK_DETAILS) if f != "project"}
+    for field, flag in LIST_FLAGS.items():
+        fields[field] = getattr(args, flag, None) or None
+    return fields
+
+
+def _author(args):
+    return getattr(args, "author", None) or os.environ.get("CC_STATUSLINE_AUTHOR") or "cli"
+
+
+def _here(conn):
+    return worklist.find_project(conn, os.getcwd())
+
+
+def _resolve(conn, args, ref):
+    proj = worklist.project(conn, args.project) if getattr(args, "project", None) else _here(conn)
+    return worklist.resolve(conn, ref, proj)
+
+
+def _session_arg(conn, args):
+    """The session to log time to: --session, else this Claude Code session."""
+    ref = getattr(args, "session", None) or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not ref:
+        return None
+    try:
+        return db.find_session(conn, ref)
+    except LookupError:
+        return None
+
+
+def _hm(seconds):
+    return report.hm(seconds) if seconds else "—"
+
+
+def _items(value):
+    try:
+        return json.loads(value) if value else []
+    except ValueError:
+        return [value]
+
+
+def _ticket_url(conn, r):
+    if r["url"]:
+        return r["url"]
+    proj = worklist.project(conn, r["project"]) if r["project"] else None
+    if r["ticket"] and proj is not None and proj["ticket_url"]:
+        return proj["ticket_url"].replace("{ticket}", r["ticket"])
+    return None
+
+
+def _show(conn, cfg, r, out, full=False):
+    """Everything needed to pick a task up again, most useful first."""
+    key = r["task"]
+    secs = worklist.seconds_per_task(conn, cfg).get(key, 0.0)
+    sess = worklist.sessions_of(conn, key)
+    head = [("task", key), ("title", r["title"] or "—"), ("status", r["status"] or "—")]
+    if r["number"] is not None:
+        head += [("kind", r["kind"] or "task"), ("priority", r["priority"] or "—"), ("area", r["area"] or "—"),
+                 ("ticket", r["ticket"] or "—")]
+    head += [("url", _ticket_url(conn, r) or "—"), ("time", f"{_hm(secs)} in {len(sess)} sessions"),
+             ("created", _local(r["created_at"])), ("closed", _local(r["closed_at"])),
+             ("updated", _local(r["updated_at"]))]
+    for label, value in head:
+        print(f"{label.ljust(8)} {value}", file=out)
+    for name in ("next_step", "criteria", "description", "evidence", "plan", "tests", "outcome"):
+        if r[name]:
+            print(f"\n{name.replace('_', ' ')}\n{r[name].rstrip()}", file=out)
+    for name in db.TASK_LISTS:
+        items = _items(r[name])
+        if items:
+            print(f"\n{name.replace('_', ' ')}", file=out)
+            for item in items:
+                print(f"  - {item}", file=out)
+    ms = worklist.metrics(conn, key)
+    if ms:
+        print("\nmetrics", file=out)
+        for m in ms:
+            print(f"  {m['name']}: {m['before'] or '—'} → {m['after'] or '—'}  ({m['method']})", file=out)
+    ns = worklist.notes(conn, key)
+    if ns:
+        shown = ns if full else ns[-5:]
+        print(f"\nnotes" + ("" if full or len(ns) <= 5 else f" (last 5 of {len(ns)}, --all for every one)"),
+              file=out)
+        for n in shown:
+            print(f"  {_local(n['ts'])}  {n['text']}", file=out)
+    if sess:
+        print("\nsessions", file=out)
+        for s in (sess if full else sess[-5:]):
+            print(f"  {s['session_id'][:8]}  {_local(s['first_ts'])}  {(s['title'] or '')[:60]}", file=out)
 
 
 def cmd_tasks(args, conn, cfg, now, out):
     if args.action == "list":
-        rows = [r for r in db.task_details(conn).values()
-                if (not args.client or r["task"].lower().startswith(args.client.lower() + ":"))
-                and (not args.status or (r["status"] or "").lower() == args.status.lower())]
+        statuses = [x.strip() for x in args.status.split(",")] if args.status else None
+        if args.open:
+            statuses = list(db.OPEN_STATUSES)
+        if args.project or args.kind or args.area or args.priority or args.open:
+            proj = args.project
+            if proj == ".":
+                here = _here(conn)
+                proj = here["slug"] if here else "\0"
+            rows = worklist.tasks(conn, proj, statuses, args.kind, args.area, args.priority)
+        else:
+            rows = [r for r in db.task_details(conn).values()
+                    if not statuses or (r["status"] or "").lower() in [x.lower() for x in statuses]]
+        rows = [r for r in rows if not args.client or r["task"].lower().startswith(args.client.lower() + ":")]
         if not rows:
             print("no tasks", file=out)
             return 0
+        secs = worklist.seconds_per_task(conn, cfg) if args.time else {}
         width = max(len(r["task"]) for r in rows)
         swidth = max(len(r["status"] or "—") for r in rows)
-        for r in sorted(rows, key=lambda r: r["task"]):
-            print(f"{r['task'].ljust(width)}  {(r['status'] or '—').ljust(swidth)}  {r['title'] or ''}".rstrip(),
-                  file=out)
+        for r in sorted(rows, key=lambda r: (r["project"] or "", r["number"] or 0, r["task"])):
+            line = f"{r['task'].ljust(width)}  {(r['status'] or '—').ljust(swidth)}"
+            if args.time:
+                line += f"  {_hm(secs.get(r['task'], 0)):>6}"
+            line += f"  {r['title'] or ''}"
+            if args.next and r["next_step"]:
+                line += f"\n{' ' * (width + 2)}→ {r['next_step'].splitlines()[0][:120]}"
+            print(line.rstrip(), file=out)
         return 0
 
-    if args.action == "show":
-        r = db.task_details(conn, args.task)
-        if r is None:
+    if args.action == "projects":
+        rows = conn.execute("SELECT p.*, (SELECT count(*) FROM tasks t WHERE t.project = p.slug) AS n, "
+                            "(SELECT count(*) FROM tasks t WHERE t.project = p.slug AND t.status IN "
+                            f"({', '.join('?' * len(db.OPEN_STATUSES))})) AS open FROM projects p ORDER BY client, slug",
+                            db.OPEN_STATUSES).fetchall()
+        for r in rows:
+            print(f"{r['slug']:<28} {r['client'] or '—':<12} {r['open']:>4} open / {r['n']:<5} "
+                  f"{r['remote'] or r['path'] or ''}", file=out)
+        return 0 if rows else (print("no projects", file=out) or 0)
+
+    if args.action == "project":
+        if worklist.project(conn, args.slug) is None:
+            if not args.path:
+                _err(f"no project '{args.slug}'; give --path to create it")
+                return 2
+            conn.execute("INSERT INTO projects (slug, path, created_at) VALUES (?, ?, ?)",
+                         (args.slug, str(Path(args.path).expanduser().resolve()), now))
+            if not args.client:
+                args.client = cfg.classify(args.path)[0]
+        worklist.set_project(conn, args.slug, client=args.client, remote=args.remote,
+                             path=str(Path(args.path).expanduser().resolve()) if args.path else None,
+                             ticket_url=args.ticket_url, repo_url=args.repo_url)
+        print(f"project {args.slug} saved", file=out)
+        return 0
+
+    if args.action == "hist":
+        key = _resolve(conn, args, args.task) if args.task else None
+        if args.task and key is None:
             _err(f"no task '{args.task}'")
             return 2
-        print(f"task     {r['task']}\ntitle    {r['title'] or '—'}\nstatus   {r['status'] or '—'}\n"
-              f"url      {r['url'] or '—'}\nupdated  {_local(r['updated_at'])}", file=out)
-        for name in ("description", "plan"):
-            if r[name]:
-                print(f"\n{name}\n{r[name].rstrip()}", file=out)
+        since = now - args.days * 86400 if args.days else None
+        rows = worklist.history(conn, key, since)
+        for h in rows:
+            change = h["after"] if h["before"] is None else f"{h['before']} → {h['after']}"
+            print(f"{_local(h['ts'])}  {h['task']}  {h['field']}: {(change or '')[:100]}"
+                  + (f"  ({h['author']})" if h["author"] else ""), file=out)
+        return 0 if rows else (print("no changes", file=out) or 0)
+
+    if args.action == "add":
+        proj = worklist.project(conn, args.project) if args.project else worklist.ensure_project(conn, cfg, os.getcwd(), now)
+        if proj is None:
+            _err(f"no project '{args.project}'")
+            return 2
+        try:
+            fields = _task_fields(args)
+        except OSError as e:
+            _err(e)
+            return 2
+        fields = {k: (json.dumps(v, ensure_ascii=False) if k in db.TASK_LISTS else v)
+                  for k, v in fields.items() if v is not None and k not in ("title", "project")}
+        fields.setdefault("status", "open")
+        key = worklist.add(conn, proj, args.title, now, _author(args), kind=fields.pop("kind", None) or "task",
+                           status=fields.pop("status"), **fields)
+        print(key, file=out)
         return 0
 
-    if args.action == "set":
+    if args.action == "set" and _resolve(conn, args, args.task) is None:
+        # Not a work-list task: a plain key, as `task set` uses them.
         try:
             fields = _task_fields(args)
         except OSError as e:
@@ -168,8 +322,84 @@ def cmd_tasks(args, conn, cfg, now, out):
         if all(v is None for v in fields.values()):
             _err("nothing to set: give --title, --description, --plan, --status or --url")
             return 2
-        db.set_task(conn, args.task, now, **fields)
+        fields = {k: (json.dumps(v, ensure_ascii=False) if k in db.TASK_LISTS and v else v) for k, v in fields.items()}
+        db.set_task(conn, args.task, now)
+        worklist.update(conn, args.task, now, _author(args), **fields)
         print(f"task {args.task} updated", file=out)
+        return 0
+
+    if args.action in ("show", "set", "start", "done", "note", "metric"):
+        key = _resolve(conn, args, args.task)
+        if key is None:
+            _err(f"no task '{args.task}'")
+            return 2
+        r = db.task_details(conn, key)
+
+        if args.action == "show":
+            _show(conn, cfg, r, out, full=args.all)
+            return 0
+
+        if args.action == "note":
+            worklist.note(conn, key, _text(args.text), now, _author(args))
+            print(f"{key}: note added", file=out)
+            return 0
+
+        if args.action == "metric":
+            try:
+                worklist.metric(conn, key, args.name, args.before, args.after, args.method, now)
+            except ValueError as e:
+                _err(e)
+                return 2
+            print(f"{key}: {args.name} {args.before} → {args.after}", file=out)
+            return 0
+
+        try:
+            fields = _task_fields(args)
+        except OSError as e:
+            _err(e)
+            return 2
+
+        if args.action == "set":
+            if all(v is None for v in fields.values()):
+                _err("nothing to set: give --title, --description, --plan, --status or --url")
+                return 2
+            changed = worklist.update(conn, key, now, _author(args), **fields)
+            print(f"task {key} updated" + ("" if changed else " (no change)"), file=out)
+            return 0
+
+        if args.action == "start":
+            if r["status"] not in db.OPEN_STATUSES and r["status"] is not None and not args.reopen:
+                _err(f"{key} is {r['status']}; --reopen to work on it again")
+                return 2
+            fields["status"] = "in-progress"
+            worklist.update(conn, key, now, _author(args), **fields)
+            sid = _session_arg(conn, args)
+            if sid is None:
+                print(f"{key}: in progress (no session to log time to; give --session)", file=out)
+                return 0
+            since = parse_when(args.since, now) if args.since else (sess_first(conn, sid) if args.from_start else None)
+            since = worklist.assign_session(conn, cfg, sid, key, now, since)
+            status.write(conn, cfg, sid, now)
+            print(f"{key}: in progress, time of {sid[:8]} from {_local(since)}", file=out)
+            return 0
+
+        # done
+        for m in args.metric or []:
+            try:
+                worklist.metric(conn, key, *m, now=now)
+            except ValueError as e:
+                _err(e)
+                return 2
+        try:
+            worklist.close(conn, key, "parked" if args.park else "done", now=now, author=_author(args),
+                           **{k: v for k, v in fields.items() if k != "status"})
+        except ValueError as e:
+            _err(f"{key}: {e} (--outcome)")
+            return 2
+        if not (args.metric or worklist.metrics(conn, key)):
+            print(f"{key}: closed without a metric; if anything was measured, add it with "
+                  f"'tasks metric {key} NAME BEFORE AFTER --method HOW'", file=sys.stderr)
+        print(f"{key}: {'parked' if args.park else 'done'}", file=out)
         return 0
 
     # import: one JSON object per line, {"task": ..., "title": ..., "plan": ...}
@@ -201,6 +431,10 @@ def cmd_tasks(args, conn, cfg, now, out):
     conn.execute("COMMIT")
     print(f"imported {count} tasks", file=out)
     return 0
+
+
+def sess_first(conn, sid):
+    return db.session(conn, sid)["first_ts"]
 
 
 def cmd_report(args, conn, cfg, now, out):
@@ -376,17 +610,78 @@ def build_parser():
     tw.add_argument("--session", required=True)
     t.set_defaults(func=cmd_task)
 
-    k = sub.add_parser("tasks", help="the tasks themselves: titles, descriptions, plans")
+    k = sub.add_parser("tasks", help="the work list: tasks, their descriptions, plans, notes and history")
     ksub = k.add_subparsers(dest="action", metavar="action", required=True)
-    kl = ksub.add_parser("list", help="every known task")
+
+    def fields(q, title=True):
+        if title:
+            q.add_argument("--title")
+        for name in db.TASK_DETAILS:
+            if name == "project":       # fixed by the key; --project picks where #N is looked up
+                continue
+            q.add_argument(f"--{name.replace('_', '-')}", dest=name,
+                           help="text, @file or - for stdin" if name in LONG_FIELDS else None)
+        for field, flag in LIST_FLAGS.items():
+            q.add_argument(f"--{flag.replace('_', '-')}", dest=flag, action="append",
+                           help=f"add to {field.replace('_', ' ')} (repeatable)")
+        q.add_argument("--author", help="who made the change (default $CC_STATUSLINE_AUTHOR or 'cli')")
+
+    def ref(q):
+        q.add_argument("task", help="key, ticket, #N in this repo's project or project#N")
+        q.add_argument("--project", help="project slug for #N (default: the one of the current directory)")
+
+    kl = ksub.add_parser("list", help="tasks, filtered")
     kl.add_argument("--client", help="only keys starting with 'client:'")
-    kl.add_argument("--status")
-    kw = ksub.add_parser("show", help="one task in full")
-    kw.add_argument("task")
-    kset = ksub.add_parser("set", help="describe a task; fields not given are kept")
-    kset.add_argument("task")
-    for name in ("title", *db.TASK_DETAILS):
-        kset.add_argument(f"--{name}", help="text, @file or - for stdin" if name in ("description", "plan") else None)
+    kl.add_argument("--status", help="comma-separated")
+    kl.add_argument("--open", action="store_true", help=f"only {', '.join(db.OPEN_STATUSES)}")
+    kl.add_argument("--project", help="a project slug, or . for the current directory's")
+    kl.add_argument("--kind")
+    kl.add_argument("--area")
+    kl.add_argument("--priority")
+    kl.add_argument("--time", action="store_true", help="counted time per task (reads the whole history)")
+    kl.add_argument("--next", action="store_true", help="the next step under each task")
+    kw = ksub.add_parser("show", help="one task in full: what to know to pick it up again")
+    ref(kw)
+    kw.add_argument("--all", action="store_true", help="every note and session, not the last five")
+    kset = ksub.add_parser("set", help="change fields; others are kept, lists are appended to")
+    ref(kset)
+    fields(kset)
+    ka = ksub.add_parser("add", help="a new task in the current directory's project")
+    ka.add_argument("title")
+    ka.add_argument("--project", help="project slug (default: the current directory's, created on first use)")
+    fields(ka, title=False)
+    kst = ksub.add_parser("start", help="mark in progress and log this session's time to it")
+    ref(kst)
+    fields(kst)
+    kst.add_argument("--session", help="id or prefix (default $CLAUDE_CODE_SESSION_ID)")
+    kst.add_argument("--reopen", action="store_true", help="start a task that is done or parked")
+    when = kst.add_mutually_exclusive_group()
+    when.add_argument("--from-start", action="store_true")
+    when.add_argument("--since")
+    kd = ksub.add_parser("done", help="close a task; needs --outcome")
+    ref(kd)
+    fields(kd)
+    kd.add_argument("--park", action="store_true", help="set aside instead of done")
+    kd.add_argument("--metric", nargs=4, action="append", metavar=("NAME", "BEFORE", "AFTER", "METHOD"))
+    kn = ksub.add_parser("note", help="add a dated note")
+    ref(kn)
+    kn.add_argument("text", help="text, @file or - for stdin")
+    kn.add_argument("--author")
+    km = ksub.add_parser("metric", help="record a measurement: before → after, and how it was measured")
+    ref(km)
+    km.add_argument("name")
+    km.add_argument("before")
+    km.add_argument("after")
+    km.add_argument("--method", help="how it was measured (required)")
+    kh = ksub.add_parser("hist", help="what changed, newest last")
+    kh.add_argument("task", nargs="?")
+    kh.add_argument("--project")
+    kh.add_argument("--days", type=float, help="only the last N days")
+    ksub.add_parser("projects", help="projects and their open tasks")
+    kp = ksub.add_parser("project", help="create or change a project")
+    kp.add_argument("slug")
+    for name in ("client", "remote", "path", "ticket-url", "repo-url"):
+        kp.add_argument(f"--{name}", help="URL with {ticket}" if name == "ticket-url" else None)
     ki = ksub.add_parser("import", help="add or update tasks from JSON Lines")
     ki.add_argument("file", help=f"one object per line with \"task\" and any of: title, {', '.join(db.TASK_DETAILS)}"
                                  "; - for stdin")

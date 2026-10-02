@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 3              # 2: assignments.branch; 3: task details
+SCHEMA_VERSION = 4              # 2: assignments.branch; 3: task details; 4: work list
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -61,6 +61,55 @@ CREATE TABLE IF NOT EXISTS tasks (
     url         TEXT                -- the ticket in Jira, Redmine and the like
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    slug        TEXT PRIMARY KEY,    -- the "cms" in d24:cms#42
+    client      TEXT,
+    remote      TEXT UNIQUE,         -- normalised origin URL: host/group/repo
+    path        TEXT,                -- repository root, when there is no remote
+    ticket_url  TEXT,                -- prefix for ticket links, e.g. https://jira.example.com/browse/
+    repo_url    TEXT,
+    created_at  REAL
+);
+
+CREATE TABLE IF NOT EXISTS task_notes (
+    id     INTEGER PRIMARY KEY,
+    task   TEXT NOT NULL,
+    ts     REAL NOT NULL,
+    author TEXT,
+    text   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task, ts);
+
+CREATE TABLE IF NOT EXISTS task_metrics (
+    id     INTEGER PRIMARY KEY,
+    task   TEXT NOT NULL,
+    ts     REAL,
+    name   TEXT NOT NULL,
+    before TEXT,
+    after  TEXT,
+    method TEXT NOT NULL             -- a number without how it was measured is a claim
+);
+CREATE INDEX IF NOT EXISTS task_metrics_task ON task_metrics(task);
+
+CREATE TABLE IF NOT EXISTS task_history (
+    id     INTEGER PRIMARY KEY,
+    task   TEXT NOT NULL,
+    ts     REAL NOT NULL,
+    author TEXT,
+    field  TEXT NOT NULL,
+    before TEXT,
+    after  TEXT
+);
+CREATE INDEX IF NOT EXISTS task_history_task ON task_history(task, ts);
+CREATE INDEX IF NOT EXISTS task_history_ts ON task_history(ts);
+
+CREATE VIEW IF NOT EXISTS v_tasks AS
+    SELECT t.task, t.project, t.number, p.client, coalesce(t.kind, 'task') AS kind, t.status, t.priority,
+           t.area, t.ticket, t.title, t.next_step, t.criteria, t.outcome,
+           datetime(t.created_at, 'unixepoch', 'localtime') AS created,
+           datetime(t.closed_at, 'unixepoch', 'localtime') AS closed,
+           datetime(t.updated_at, 'unixepoch', 'localtime') AS updated
+    FROM tasks t LEFT JOIN projects p ON p.slug = t.project;
 CREATE TABLE IF NOT EXISTS asked (
     session_id TEXT NOT NULL,
     candidate  TEXT NOT NULL,
@@ -97,18 +146,34 @@ def connect(path=None):
     return conn
 
 
-TASK_DETAILS = ("description", "plan", "status", "url")
+# Free-text fields of a task, settable one by one.
+TASK_DETAILS = ("description", "plan", "status", "url",
+                "kind", "project", "ticket", "priority", "area",
+                "evidence", "next_step", "outcome", "tests", "criteria")
+# JSON lists, appended to rather than replaced.
+TASK_LISTS = ("pitfalls", "files", "commits", "depends_on")
+TASK_COLUMNS = ([("assignments", "branch", "TEXT")]
+                + [("tasks", c, "TEXT") for c in TASK_DETAILS + TASK_LISTS]
+                + [("tasks", c, t) for c, t in (("number", "INTEGER"), ("created_at", "REAL"),
+                                                ("closed_at", "REAL"))])
 
 
 def _migrate(conn):
     """Bring tables created by older versions up to the current schema."""
-    for table, column in [("assignments", "branch")] + [("tasks", c) for c in TASK_DETAILS]:
-        if column in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+    have = {}
+    for table, column, kind in TASK_COLUMNS:
+        if table not in have:
+            have[table] = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column in have[table]:
             continue
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         except sqlite3.OperationalError:
             pass                        # another hook process migrated it first
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS tasks_number ON tasks(project, number)")
+    except sqlite3.OperationalError:
+        pass
 
 
 def record_event(conn, **ev):
@@ -196,7 +261,7 @@ def set_task(conn, task, now=None, **fields):
     No upsert and no INSERT OR REPLACE: the first needs SQLite 3.24, the second
     would wipe a description whenever a title is set.
     """
-    unknown = set(fields) - {"title", *TASK_DETAILS}
+    unknown = set(fields) - {"title", "number", "created_at", "closed_at", *TASK_DETAILS, *TASK_LISTS}
     if unknown:
         raise ValueError(f"unknown task fields: {', '.join(sorted(unknown))}")
     now = now or time.time()
@@ -208,6 +273,37 @@ def set_task(conn, task, now=None, **fields):
 
 def task_titles(conn):
     return {r["task"]: r["title"] for r in conn.execute("SELECT task, title FROM tasks")}
+
+
+OPEN_STATUSES = ("open", "in-progress", "waiting")
+
+
+def task_aliases(conn):
+    """{"CLIENT:TICKET" or "TICKET": task key} for work-list tasks that carry a ticket.
+
+    A branch or prompt names the ticket (CMS-706); the time belongs to the task
+    that tracks it. Several records may share a ticket (a task and decisions
+    taken on it): the alias goes to a task over a decision, an open one over a
+    closed one, then the newest.
+    """
+    best = {}
+    for r in conn.execute("SELECT t.task, t.ticket, t.kind, t.status, t.number, p.client FROM tasks t "
+                          "LEFT JOIN projects p ON p.slug = t.project "
+                          "WHERE t.ticket IS NOT NULL AND t.ticket != '' AND t.number IS NOT NULL"):
+        score = ((r["kind"] or "task") == "task", r["status"] in OPEN_STATUSES, r["number"])
+        ticket = r["ticket"].strip().upper()
+        for alias in ([f"{r['client']}:{ticket}"] if r["client"] else []) + [ticket]:
+            if alias not in best or score > best[alias][0]:
+                best[alias] = (score, r["task"])
+    return {a: v[1] for a, v in best.items()}
+
+
+def alias_of(aliases, task):
+    """The work-list task a key stands for, or the key itself."""
+    if not task or not aliases:
+        return task
+    client, sep, rest = task.rpartition(":")
+    return aliases.get(f"{client}{sep}{rest.upper()}", task)
 
 
 def task_details(conn, task=None):

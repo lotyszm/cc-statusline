@@ -90,14 +90,44 @@ def _output(event, context):
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
 
 
-def _session_context(info, session_id):
+NEXT_MAX = 400
+
+
+def _task_brief(conn, task):
+    """What the agent should know about the current work-list task, or ''."""
+    row = db.task_details(conn, task) if task else None
+    if row is None or row["number"] is None:
+        return ""
+    lines = [f"Task status: {row['status'] or '-'}."]
+    for name, label in (("next_step", "Next step"), ("criteria", "Done when")):
+        if row[name]:
+            text = " ".join(row[name].split())
+            lines.append(f"{label}: {text[:NEXT_MAX]}{'…' if len(text) > NEXT_MAX else ''}")
+    try:
+        pitfalls = json.loads(row["pitfalls"] or "[]")
+    except ValueError:
+        pitfalls = []
+    if pitfalls:
+        lines.append(f"Known pitfalls: {len(pitfalls)}, see `{cli_command()} tasks show {task}`.")
+    return "\n".join(lines) + "\n"
+
+
+def _worklist_hint(cli):
+    return (f"Work list: `{cli} tasks list --open --project .` shows this repo's open tasks, "
+            f"`{cli} tasks show <TASK>` one in full; `tasks start|note|set|done` keep it current "
+            "(set --next-step when you stop mid-way).\n")
+
+
+def _session_context(info, session_id, brief="", worklist=False):
     task = info["task"] or "none"
     if info["task"] and info.get("title"):
         task += f" ({info['title']})"
     project = Path(info["project"]).name if info.get("project") else "-"
+    cli = cli_command()
     return (
         f"cc-statusline: time in this session is tracked for billing (client {info['client']}, "
         f"project {project}, branch {info.get('branch') or '-'}). Current task: {task}.\n"
+        + brief + (_worklist_hint(cli) if worklist else "") +
         "If the user says which task or ticket this work is for (an ID such as 12345 or PROJ-123, "
         "or a clear description) and it is not the current task, ask once, at the end of your "
         "reply, whether to log this session's time to it. A direct statement from the user counts "
@@ -111,7 +141,9 @@ def _prompt_context(conn, cfg, session_id, prompt, now):
     cur = ledger.current(conn, cfg, session_id, now)
     if cur is None or not cur.billable:
         return None
-    fresh = [cfg.qualify(cur.client, c) for c in cfg.prompt_candidates(prompt)]
+    aliases = db.task_aliases(conn)
+    fresh = [db.alias_of(aliases, cfg.qualify(cur.client, c)) for c in cfg.prompt_candidates(prompt)]
+    fresh = list(dict.fromkeys(fresh))
     fresh = [c for c in fresh if c != cur.task]
     fresh = [c for c in fresh if db.mark_asked(conn, session_id, c, now)]
     if not fresh:
@@ -159,7 +191,14 @@ def handle(payload, conn, cfg, now, env):
     if event == "SessionStart":
         status.cleanup(now)
         info = status.write(conn, cfg, session_id, now)
-        return _output(event, _session_context(info, session_id)) if info["billable"] else None
+        brief = _task_brief(conn, info["task"])
+        if not info["billable"]:
+            # Own projects are not billed, but a task picked up again still needs its next step.
+            return _output(event, f"cc-statusline: current task {info['task']}"
+                                  f"{' (' + info['title'] + ')' if info.get('title') else ''}.\n{brief}"
+                                  + _worklist_hint(cli_command())) if brief else None
+        has_list = conn.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None
+        return _output(event, _session_context(info, session_id, brief, has_list))
 
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt") or ""

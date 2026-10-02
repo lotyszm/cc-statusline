@@ -41,14 +41,20 @@ class _TaskLog:
         return sorted(set(self.times[bisect.bisect_right(self.times, start):bisect.bisect_left(self.times, end)]))
 
 
-def _task(cfg, row, log, at, client=None):
+def _task(cfg, row, log, at, client=None, aliases=None):
     """The task for time at `at` that hangs on event `row`.
 
     A confirmed assignment wins, with one exception: on a branch that carries
     its own task number, when the assignment was made on a different branch.
     Checking out feature/12345 means working on 12345; coming back, or moving
     to a branch without a number, the confirmed task applies again.
+
+    A ticket that a work-list task carries (CMS-706) stands for that task.
     """
+    return db.alias_of(aliases, _raw_task(cfg, row, log, at, client))
+
+
+def _raw_task(cfg, row, log, at, client):
     branch_task = cfg.qualify(client, cfg.branch_task(row["branch"]))
     hit = log.at(at)
     if hit is None:
@@ -59,13 +65,13 @@ def _task(cfg, row, log, at, client=None):
     return task
 
 
-def _key(cfg, session_id, row, project_dir, log, at=None):
+def _key(cfg, session_id, row, project_dir, log, at=None, aliases=None):
     client, billable = cfg.classify(row["cwd"])
     if client is None:
         # The agent may have cd'd somewhere unrelated (/tmp); the session
         # still belongs to the project it was started in.
         client, billable = cfg.classify(project_dir)
-    task = _task(cfg, row, log, row["ts"] if at is None else at, client)
+    task = _task(cfg, row, log, row["ts"] if at is None else at, client, aliases)
     return Key(session_id, client, billable, row["project"] or project_dir, row["branch"], task)
 
 
@@ -87,6 +93,7 @@ def intervals(conn, cfg, start, end):
                               f"WHERE session_id IN ({', '.join('?' * len(chunk))})", chunk):
             project_dirs[r["session_id"]] = r["project_dir"]
     logs = db.assignments(conn, sids)
+    aliases = db.task_aliases(conn)
 
     out = []
     for sid, rows in by_session.items():
@@ -101,7 +108,7 @@ def intervals(conn, cfg, start, end):
             # not from the next event.
             cuts = [s] + log.changes_between(s, e) + [e]
             for p0, p1 in zip(cuts, cuts[1:]):
-                spans.append((p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0)))
+                spans.append((p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0, aliases=aliases)))
         out.extend(timeline.merge(spans))
     out.sort(key=lambda iv: iv[0])
     return out
@@ -196,7 +203,7 @@ def current(conn, cfg, session_id, now=None):
         return None
     log = _TaskLog(db.assignments(conn, [session_id])[session_id])
     return _key(cfg, session_id, last, sess["project_dir"] if sess else None, log,
-                at=now or time.time())
+                at=now or time.time(), aliases=db.task_aliases(conn))
 
 
 def today(conn, cfg, session_id, now=None):
