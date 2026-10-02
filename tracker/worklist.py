@@ -174,7 +174,8 @@ def update(conn, key, now=None, author=None, **fields):
             if row[field] == value:
                 continue
             changed[field] = value
-            _history(conn, key, field, row[field], value, now, author)
+            if field not in ("closed_at", "created_at", "number"):     # implied by status / creation
+                _history(conn, key, field, row[field], value, now, author)
         if changed:
             db.set_task(conn, key, now, **changed)
         conn.execute("COMMIT")
@@ -259,11 +260,24 @@ def seconds_per_task(conn, cfg, start=0.0, end=None):
     return out
 
 
-def sessions_of(conn, key):
-    """Sessions that have logged time to a task: (session_id, first_ts, title)."""
-    return conn.execute("SELECT DISTINCT s.session_id, s.first_ts, s.title FROM assignments a "
-                        "JOIN sessions s USING (session_id) WHERE a.task = ? ORDER BY s.first_ts",
-                        (key,)).fetchall()
+def time_of(conn, cfg, key, start=0.0, end=None):
+    """(counted seconds, [session rows]) of one task, as reports count them.
+
+    Sessions come from the counted time, not from assignments only: a branch
+    named after the ticket, or an assignment to the ticket key, counts too.
+    """
+    secs, sids = 0.0, set()
+    for (k, _day), s in ledger.allocate(conn, cfg, start, end or time.time()).items():
+        if k.task == key:
+            secs += s
+            sids.add(k.session_id)
+    rows = []
+    ids = sorted(sids)
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        rows += conn.execute(f"SELECT session_id, first_ts, title FROM sessions "
+                             f"WHERE session_id IN ({', '.join('?' * len(chunk))})", chunk).fetchall()
+    return secs, sorted(rows, key=lambda r: r["first_ts"] or 0)
 
 
 def notes(conn, key):

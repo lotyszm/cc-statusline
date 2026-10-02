@@ -187,8 +187,7 @@ def _ticket_url(conn, r):
 def _show(conn, cfg, r, out, full=False):
     """Everything needed to pick a task up again, most useful first."""
     key = r["task"]
-    secs = worklist.seconds_per_task(conn, cfg).get(key, 0.0)
-    sess = worklist.sessions_of(conn, key)
+    secs, sess = worklist.time_of(conn, cfg, key)
     head = [("task", key), ("title", r["title"] or "—"), ("status", r["status"] or "—")]
     if r["number"] is not None:
         head += [("kind", r["kind"] or "task"), ("priority", r["priority"] or "—"), ("area", r["area"] or "—"),
