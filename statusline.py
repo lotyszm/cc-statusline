@@ -1087,6 +1087,7 @@ script as `cc-statusline`:
   cc-statusline sessions --unassigned    client time not logged to a task yet
   cc-statusline task set ID --session S  log a session's time to a task
   cc-statusline tasks set ID --plan @f   describe a task: title, description, plan, status
+  cc-statusline tasks list --open --project .   the work list: add, start, note, done, show, hist
   cc-statusline explain --session S      how a session's time was counted
   cc-statusline dashboard                open the local dashboard
   cc-statusline import                   backfill from transcripts

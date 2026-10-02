@@ -290,6 +290,39 @@ cc-statusline tasks import tasks.jsonl      # one {"task": ..., "title": ..., "p
 Fields not given are kept, so setting a title never wipes a plan. An import is all or nothing:
 one bad line and no task is changed.
 
+### Work list
+
+A task can be more than a label for time: something to do, with a status, a next
+step and a history. Tasks of the work list live in a project (a repository, found by
+its `origin` remote and then by path; a worktree belongs to its clone) and get a
+number there, so their key is `client:project#N`, the same key time is logged to.
+
+```
+cc-statusline tasks add "Checkout rounds twice" --ticket SHOP-42 --criteria "14 cent errors → 0"
+cc-statusline tasks start 1            # in progress, and this session's time goes to it
+cc-statusline tasks set 1 --next-step "round in Basket::total" --pitfall "prices are cached"
+cc-statusline tasks note 1 "price comes from two places"
+cc-statusline tasks done 1 --outcome "rounded once" --metric errors 14 0 "orders since 09-01"
+cc-statusline tasks list --open --project . --time --next
+cc-statusline tasks show SHOP-42       # by number, project#N, key or ticket
+cc-statusline tasks hist --days 7
+```
+
+- **A ticket is a field, not the key.** A branch `feature/SHOP-42-x`, a prompt naming
+  SHOP-42 or an older assignment to `acme:SHOP-42` counts for the task that carries
+  the ticket. When a task and a decision share a ticket, the task wins.
+- **Every change is recorded** in `task_history` (field, before, after, author).
+  List fields (`--pitfall`, `--file`, `--commit`, `--depends-on`) are appended to.
+- **`done` needs `--outcome`**, and warns when nothing was measured: metrics carry
+  the method they were measured with, so history is more than a list of titles.
+- **The agent is told.** At session start the hook adds the current task's status,
+  next step and criteria to the context, and points at `tasks list --open --project .`
+  once a work list exists. A prompt naming the current task's ticket asks nothing.
+- `show` is a resume package: next step, criteria, description, evidence, plan,
+  pitfalls, metrics, the last notes, counted time and the sessions behind it.
+- `projects` lists projects; `project SLUG --ticket-url 'https://jira/browse/{ticket}'`
+  turns tickets into links. The `v_tasks` view is there for ad-hoc SQL.
+
 ### Commands
 
 | Command | What it does |
