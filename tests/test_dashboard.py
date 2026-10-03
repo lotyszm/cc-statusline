@@ -143,6 +143,13 @@ class DashboardTest(ServedTestCase):
         self.assertEqual((status, ctype.split(";")[0]), (200, "text/html"))
         self.assertIn(b"<html", body.lower())
 
+    def test_the_time_page_opens_on_today_with_arrows_to_step_the_range(self):
+        _, _, raw = self.request("/")
+        page = raw.decode()
+        self.assertIn('const DEFAULT_PRESET = "today";', page)
+        for arrow in ('id="range-prev"', 'id="range-next"'):
+            self.assertIn(arrow, page)
+
     def test_both_pages_carry_the_theme_switch(self):
         for path in ("/", "/tasks"):
             _, _, raw = self.request(path)

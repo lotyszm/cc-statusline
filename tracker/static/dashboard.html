@@ -147,6 +147,8 @@
   .overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 440px); gap: 16px; }
   .overview > * { min-width: 0; margin: 0; }
   .day-pane { border-left: 1px solid var(--grid); padding-left: 16px; }
+  .rangenav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .rangenav button { padding: 4px 9px; }
   .daynav { display: flex; align-items: center; gap: 4px; }
   .daynav button { padding: 4px 9px; }
   .daynav input { padding: 4px 8px; }
@@ -257,8 +259,12 @@
       <button type="button" data-preset="7">Last 7 days</button>
       <button type="button" data-preset="today">Today</button>
     </div>
-    <label>From <input type="date" id="from"></label>
-    <label>To <input type="date" id="to"></label>
+    <div class="rangenav" role="group" aria-label="Range">
+      <button type="button" id="range-prev" aria-label="Previous period" title="Previous period">‹</button>
+      <label>From <input type="date" id="from"></label>
+      <label>To <input type="date" id="to"></label>
+      <button type="button" id="range-next" aria-label="Next period" title="Next period">›</button>
+    </div>
     <label>Client <select id="client"><option value="*">All clients</option></select></label>
   </nav>
 
@@ -390,6 +396,8 @@ function sv(tag, attrs = {}) {
 }
 
 // ── ranges & URL ────────────────────────────────────────────────────────────
+const DEFAULT_PRESET = "today";                 // a bare / opens on today
+const PRESETS = ["today", "7", "month", "last-month"];
 function presetRange(name) {
   const t = new Date(); t.setHours(0, 0, 0, 0);
   if (name === "today") return [t, t];
@@ -397,14 +405,39 @@ function presetRange(name) {
   if (name === "last-month") return [new Date(t.getFullYear(), t.getMonth() - 1, 1), new Date(t.getFullYear(), t.getMonth(), 0)];
   return [new Date(t.getFullYear(), t.getMonth(), 1), t];
 }
-function markPreset() {
+const presetOf = (from, to) => PRESETS.find((p) => presetRange(p).map(iso).join() === `${from},${to}`) || null;
+// The presets and the arrows follow the range; › stops at today.
+function markRange() {
   for (const b of document.querySelectorAll("[data-preset]")) b.setAttribute("aria-pressed", String(b.dataset.preset === state.preset));
+  $("range-next").disabled = state.to >= iso(new Date());
+}
+// ‹ and › move the range by its own length: today by a day, seven days by seven, and a
+// month by a calendar month (This month steps to the whole of the one before). Never past today.
+function shiftRange(n) {
+  const f = parseDay(state.from), t = parseDay(state.to), today = iso(new Date());
+  const wholeMonth = f.getDate() === 1 && new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1).getDate() === 1
+    && t.getMonth() === f.getMonth() && t.getFullYear() === f.getFullYear();
+  let nf, nt;
+  if (state.preset === "month" || state.preset === "last-month" || (state.preset === null && wholeMonth)) {
+    nf = new Date(f.getFullYear(), f.getMonth() + n, 1);
+    nt = new Date(f.getFullYear(), f.getMonth() + n + 1, 0);
+  } else {
+    const days = Math.round((t - f) / 86400000) + 1;
+    nf = new Date(f); nf.setDate(f.getDate() + n * days);
+    nt = new Date(t); nt.setDate(t.getDate() + n * days);
+  }
+  state.from = iso(nf); state.to = iso(nt) > today ? today : iso(nt);
+  state.preset = presetOf(state.from, state.to);
+  $("from").value = state.from; $("to").value = state.to;
+  markRange();
+  keepDay();
+  load();
 }
 function applyPreset(name) {
   const [f, t] = presetRange(name);
   state.preset = name; state.from = iso(f); state.to = iso(t);
   $("from").value = state.from; $("to").value = state.to;
-  markPreset();
+  markRange();
 }
 // The view lives in the URL, so a reload or a bookmark comes back to it.
 function syncUrl() {
@@ -915,12 +948,14 @@ for (const b of document.querySelectorAll("[data-preset]")) b.addEventListener("
 for (const id of ["from", "to"]) $(id).addEventListener("change", () => {
   if (!$("from").value || !$("to").value) return;
   state.from = $("from").value; state.to = $("to").value; state.preset = null;
-  markPreset();
+  markRange();
   keepDay();
   load();
 });
 $("client").addEventListener("change", () => { state.client = $("client").value; state.open.clear(); syncUrl(); render(); });
 $("day").addEventListener("change", () => selectDay($("day").value));
+$("range-prev").addEventListener("click", () => shiftRange(-1));
+$("range-next").addEventListener("click", () => shiftRange(1));
 $("day-prev").addEventListener("click", () => shiftDay(-1));
 $("day-next").addEventListener("click", () => shiftDay(1));
 $("export").addEventListener("click", exportCsv);
@@ -953,9 +988,9 @@ const initial = new URLSearchParams(location.search);
 if (validDay(initial.get("from")) && validDay(initial.get("to"))) {
   state.preset = null; state.from = initial.get("from"); state.to = initial.get("to");
   $("from").value = state.from; $("to").value = state.to;
-  markPreset();
+  markRange();
 } else {
-  applyPreset(["month", "last-month", "7", "today"].includes(initial.get("preset")) ? initial.get("preset") : "month");
+  applyPreset(PRESETS.includes(initial.get("preset")) ? initial.get("preset") : DEFAULT_PRESET);
 }
 state.client = initial.get("client") || "*";
 state.day = validDay(initial.get("day")) ? initial.get("day") : null;

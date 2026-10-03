@@ -348,6 +348,10 @@ cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreate
 session, and the time still waiting for a task, which you can assign from there. The CSV export
 matches `cc-statusline report`.
 
+It opens on today. The presets pick other ranges, and ‹ › beside the dates move the range by its
+own length: a day, seven days or a calendar month. A switch in the header sets a light, dark or
+system theme for both pages.
+
 Next to the chart, one day is broken down by task: its hours and the same hours rounded up to the
 next quarter hour, with a total of each. Pick the day there or click it in the chart. Tasks under a
 minute are listed apart with their real time; they count in the hours total but are not rounded.
