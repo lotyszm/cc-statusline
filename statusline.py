@@ -589,6 +589,7 @@ def hooks_wired(account_dir):
 
 R, B = "\033[0m", "\033[1m"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def fg(idx, s):
@@ -723,7 +724,8 @@ def task_column(open_, current, width):
         num = f"#{it.get('number')}"
         num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
         room = width - lw - nw - 3
-        title = str(it.get("title") or "")
+        # A title is user data: control characters (ESC and the like) never reach the terminal.
+        title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
         if len(title) > room:
             title = title[:max(0, room - 1)] + "…"
         title = fg(C_TASK, title) if it.get("task") == current else val(title)

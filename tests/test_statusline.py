@@ -232,6 +232,18 @@ class HintTest(StatuslineTestCase):
             os.environ["CC_STATUSLINE_COLUMNS"] = "180"
             self.assertEqual(self.sl.terminal_width(), 180)
 
+    def test_control_characters_in_a_title_never_reach_the_terminal(self):
+        self.write_open(count=1)
+        f = paths.status_dir() / "sess-1.json"
+        st = json.loads(f.read_text())
+        st["open"]["items"][0]["title"] = "evil\x1b]0;pwned\x07\x9b2J end"
+        f.write_text(json.dumps(st))
+        with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
+            raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
+                                  "workspace": {"current_dir": self.tmp}, "context_window": {}})
+        task_part = raw.split("\n")[1].split("#1", 1)[1]
+        self.assertNotRegex(ANSI.sub("", task_part), r"[\x00-\x1f\x7f-\x9f]")
+
     def test_a_project_with_nothing_open_says_so(self):
         self.write_open(count=0)
         with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
