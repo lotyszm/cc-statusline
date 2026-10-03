@@ -160,6 +160,16 @@
   .banner.ok { border-left-color: var(--good); }
   footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
 
+  .head-end { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .guide p { margin: 0 0 6px; }
+  .guide p:last-child { margin-bottom: 0; }
+  .guide code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .guide p code, .guide li code { background: var(--wash); border-radius: 4px; padding: 1px 4px; overflow-wrap: anywhere; }
+  .guide pre { margin: 0 0 6px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2);
+               overflow-x: auto; line-height: 1.6; }
+  .guide pre .c { color: var(--muted); }
+  .guide .chip { vertical-align: baseline; }
+
   @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
   @media (max-width: 1100px) {
     .layout { grid-template-columns: minmax(0, 1fr); }
@@ -179,10 +189,13 @@
       <h1>Work list</h1>
       <p class="sub" id="sub">Tasks and decisions, with the time cc-statusline counted for them.</p>
     </div>
-    <nav class="pages" aria-label="Pages">
-      <a href="/">Time</a>
-      <a href="/tasks" aria-current="page">Work list</a>
-    </nav>
+    <div class="head-end">
+      <button type="button" id="guide-open" aria-controls="detail">How to use</button>
+      <nav class="pages" aria-label="Pages">
+        <a href="/">Time</a>
+        <a href="/tasks" aria-current="page">Work list</a>
+      </nav>
+    </div>
   </header>
 
   <nav class="filters" aria-label="Filters">
@@ -213,6 +226,72 @@
   <footer>Status and project change here; everything else with <span class="mono">cc-statusline tasks …</span> or
     <span class="mono">todo</span>. Every change goes to the task's history; the page reads the database afresh on every load.</footer>
 </div>
+
+<!-- The pane shows this while no task is open; "How to use" brings it back. The README's Work list, in short. -->
+<template id="guide">
+  <div class="guide">
+    <p class="muted">Pick a task to see its description, plan, notes and sessions.</p>
+    <h2>How to use the work list</h2>
+    <p>A task here is something to do: it has a status, a next step and a history, and the time
+      cc-statusline counts goes to it like to any other task.</p>
+
+    <div class="section">
+      <h3>Tasks live in a project</h3>
+      <p>A project is a repository, found by its <code>origin</code> remote, then by its path; a worktree
+        belongs to its clone. The first <code>tasks add</code> in a repository creates it, with the client
+        from your rules. Keys read <code>client:project#12</code>; inside the repository <code>12</code> or
+        <code>#12</code> is enough.</p>
+    </div>
+
+    <div class="section">
+      <h3>The cycle</h3>
+      <p>Each command starts with <code>cc-statusline</code>:</p>
+<pre><code>tasks add "Checkout rounds twice" --criteria "errors → 0"
+tasks start 12      <span class="c"># in progress; time goes to it</span>
+tasks set 12 --next-step "round in Basket::total"
+tasks note 12 "price comes from two places"
+tasks done 12 --outcome "rounded once"</code></pre>
+      <p>Set <code>--next-step</code> whenever you stop half-way: it is the first thing the next session reads.</p>
+    </div>
+
+    <div class="section">
+      <h3>Statuses</h3>
+      <p><span class="chip open">open</span>, <span class="chip in-progress">in progress</span> and
+        <span class="chip waiting">waiting</span> are open. <span class="chip done">done</span> closes a task
+        and needs <code>--outcome</code>, what was actually done; <code>done --park</code> sets it aside as
+        <span class="chip parked">parked</span>. On an open task, Change sets the status or moves it to
+        another project.</p>
+    </div>
+
+    <div class="section">
+      <h3>Tickets</h3>
+      <p><code>--ticket SHOP-42</code> ties a Jira or Redmine ticket to the task: a branch such as
+        <code>feature/SHOP-42-x</code> or a prompt naming SHOP-42 then counts for it.
+        <code>tasks project SLUG --ticket-url 'https://jira.example/browse/{ticket}'</code> turns tickets into links.</p>
+    </div>
+
+    <div class="section">
+      <h3>With Claude</h3>
+      <p>The commands need not be typed: tell Claude "add a task: …", "start #12" or "close #12, outcome: …"
+        and it runs them. <code>start</code> logs the session it runs in, from its beginning when it had no
+        task yet; <code>--since HH:MM</code> picks the moment. When a session starts on a task, Claude is told
+        its status, next step and criteria, so it picks up where the last session stopped.</p>
+    </div>
+
+    <div class="section">
+      <h3>Where it shows</h3>
+      <ul class="plain">
+        <li>The status line: the open count, the most pressing tasks and a link to this page.</li>
+        <li>This page: filter by status and project, search, open a task for its notes, sessions and history.</li>
+        <li>The terminal: <code>tasks list --open --project .</code>, <code>tasks show 12</code>, and
+          <code>tasks doctor</code> for what needs a move.</li>
+      </ul>
+    </div>
+
+    <p class="section muted">Every option: <code>cc-statusline tasks --help</code> and the Work list section of the
+      <a href="https://github.com/lotyszm/cc-statusline#work-list" target="_blank" rel="noopener noreferrer">README</a>.</p>
+  </div>
+</template>
 
 <script>
 "use strict";
@@ -440,15 +519,28 @@ function markSelected() {
   for (const r of $("list").querySelectorAll("tr.row")) r.setAttribute("aria-selected", String(r.dataset.task === state.task));
 }
 
+// On a narrow screen the pane sits under the list: bring it into view.
+function revealPane() {
+  if (matchMedia("(max-width: 1100px)").matches)
+    $("detail").scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
 let taskRequest = 0;
+function showGuide() {
+  state.task = null;
+  ++taskRequest;                                   // a task still loading does not replace it
+  syncUrl();
+  markSelected();
+  $("detail").replaceChildren($("guide").content.cloneNode(true));
+}
+
 async function openTask(key) {
   state.task = key;
   syncUrl();
   markSelected();
   const req = ++taskRequest, pane = $("detail");
   pane.replaceChildren(el("div", { class: "empty", text: "Loading…" }));
-  if (matchMedia("(max-width: 1100px)").matches)
-    pane.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  revealPane();
   try {
     const r = await fetch(`/api/task?key=${encodeURIComponent(key)}`);
     const t = await r.json();
@@ -517,12 +609,14 @@ for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("cl
 $("project").addEventListener("change", () => { state.project = $("project").value; load(); });
 let searchTimer;
 $("q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.q = $("q").value.trim(); load(); }, 200); });
+$("guide-open").addEventListener("click", () => { showGuide(); revealPane(); });
 
 const initial = new URLSearchParams(location.search);
 state.view = VIEWS.includes(initial.get("view")) ? initial.get("view") : "open";
 state.project = initial.get("project") || "";
 state.q = initial.get("q") || "";
 $("q").value = state.q;
+if (!initial.get("task")) showGuide();
 // The pane's project list comes with the work list, so a linked task opens after it.
 load().then(() => { if (initial.get("task")) openTask(initial.get("task")); });
 </script>

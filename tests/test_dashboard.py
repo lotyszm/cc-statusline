@@ -217,6 +217,14 @@ class WorkListViewTest(ServedTestCase):
         self.assertEqual((status, ctype), (200, "text/html; charset=utf-8"))
         self.assertIn(b"/api/tasks", raw)
 
+    def test_the_page_carries_a_guide_to_the_work_list(self):
+        _, _, raw = self.request("/tasks")
+        page = raw.decode()
+        self.assertIn('<template id="guide">', page)
+        self.assertIn('id="guide-open"', page)          # the header button that brings it back
+        for command in ("tasks add", "tasks start", "--next-step", "tasks done", "--outcome", "--ticket"):
+            self.assertIn(command, page)
+
     def test_open_view_lists_open_tasks_with_time_and_ticket_link(self):
         data = self.tasks()
         self.assertEqual([t["title"] for t in data["tasks"]], ["Hotfix pricing"])
