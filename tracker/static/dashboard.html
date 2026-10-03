@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>Agent time · cc-statusline</title>
 <style>
   :root {
@@ -66,6 +67,10 @@
   h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
   h2 { font-size: 15px; font-weight: 600; margin: 0; }
   .sub { color: var(--ink-2); margin: 2px 0 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .pages { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
+  .pages a { padding: 5px 12px; border-radius: 8px; color: var(--ink-2); text-decoration: none; }
+  .pages a[aria-current="page"] { background: var(--surface-1); box-shadow: var(--shadow); color: var(--ink); font-weight: 600; }
   .muted { color: var(--muted); }
 
   button, input, select {
@@ -189,6 +194,9 @@
   }
   @starting-style { .detail-inner { opacity: 0; transform: translateY(-4px); } }
   .detail-grid { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 16px 32px; }
+  .task-about { margin: 0 0 16px; display: grid; gap: 12px; }
+  .task-about .meta { color: var(--ink-2); }
+  .task-about .text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 80ch; margin: 0; }
   .detail h3 { font-size: 12px; font-weight: 500; color: var(--muted); margin: 0 0 6px; }
   .daylist { list-style: none; margin: 0; padding: 0; font-variant-numeric: tabular-nums; }
   .daylist li { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; }
@@ -236,8 +244,14 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Agent time</h1>
-    <p class="sub" id="sub">Time spent working with Claude Code, recorded by cc-statusline.</p>
+    <div>
+      <h1>Agent time</h1>
+      <p class="sub" id="sub">Time spent working with Claude Code, recorded by cc-statusline.</p>
+    </div>
+    <nav class="pages" aria-label="Pages">
+      <a href="/" aria-current="page">Time</a>
+      <a href="/tasks">Work list</a>
+    </nav>
   </header>
 
   <nav class="filters" aria-label="Filters">
@@ -778,9 +792,25 @@ function renderClients(clients, cur) {
   $("clients").replaceChildren(el("table", {}, el("thead", {}, head), body));
 }
 
+// Only web links: a task's url comes from imports and is not trusted as a scheme.
+const webUrl = (u) => /^https?:\/\//i.test(u || "") ? u : null;
+
+function taskAbout(t) {
+  const link = webUrl(t.url);
+  const meta = [t.status ? el("span", { text: `Status: ${t.status}` }) : null,
+    link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: link }) : null,
+    t.number != null ? el("a", { href: `/tasks?view=all&task=${encodeURIComponent(t.task)}`, text: "Open in the work list" }) : null].filter(Boolean);
+  const parts = [
+    meta.length ? el("div", { class: "meta" }, ...meta.flatMap((m, i) => i ? [" · ", m] : [m])) : null,
+    t.description ? el("div", {}, el("h3", { text: "Description" }), el("p", { class: "text", text: t.description })) : null,
+    t.plan ? el("div", {}, el("h3", { text: "Plan" }), el("p", { class: "text", text: t.plan })) : null,
+  ].filter(Boolean);
+  return parts.length ? el("div", { class: "task-about" }, ...parts) : null;
+}
+
 function taskDetail(td, t) {
   const days = Object.entries(t.days);
-  td.append(el("div", { class: "detail-inner" }, el("div", { class: "detail-grid" },
+  td.append(el("div", { class: "detail-inner" }, taskAbout(t), el("div", { class: "detail-grid" },
     el("div", {}, el("h3", { text: "Hours by day" }),
       el("ul", { class: "daylist" }, ...days.map(([d, s]) => el("li", {}, el("span", { text: dayFmt.format(parseDay(d)) }), el("span", { text: hm(s) }))))),
     el("div", {}, el("h3", { text: "What was done (session titles)" }),

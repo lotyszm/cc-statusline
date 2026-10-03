@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Work list · cc-statusline</title>
+<style>
+  /* Tokens and base components follow dashboard.html, so both pages read as one tool. */
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface-1: #fcfcfb;
+    --surface-2: #f3f2ee;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --shadow: 0 0 0 1px rgba(11, 11, 11, 0.06), 0 1px 2px rgba(11, 11, 11, 0.04);
+    --wash: rgba(11, 11, 11, 0.04);
+    --accent: #2a78d6;
+    --warning: #fab219;
+    --warning-ink: #8a5a00;
+    --good: #006300;
+    --danger: #b42318;
+    --focus: #2a78d6;
+    --select: rgba(42, 120, 214, 0.10);
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface-1: #1a1a19;
+      --surface-2: #232321;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.4);
+      --wash: rgba(255, 255, 255, 0.05);
+      --accent: #3987e5;
+      --warning-ink: #f5c04a;
+      --good: #0ca30c;
+      --danger: #f97066;
+      --focus: #3987e5;
+      --select: rgba(57, 135, 229, 0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .sub { color: var(--ink-2); margin: 2px 0 0; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  button, input, select {
+    font: inherit; color: var(--ink); background: var(--surface-1);
+    border: 0; box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px;
+  }
+  button { cursor: pointer; transition: transform 160ms var(--ease-out), background-color 150ms ease; }
+  button:active { transform: scale(0.97); }
+  @media (hover: hover) and (pointer: fine) { button:hover:not(:disabled) { background: var(--surface-2); } }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  input:focus-visible, select:focus-visible { outline-offset: 0; }
+  a { color: var(--accent); }
+
+  .pages { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
+  .pages a { padding: 5px 12px; border-radius: 8px; color: var(--ink-2); text-decoration: none; }
+  .pages a[aria-current="page"] { background: var(--surface-1); box-shadow: var(--shadow); color: var(--ink); font-weight: 600; }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 20px 0 16px; }
+  .segmented { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
+  .segmented button { box-shadow: none; background: transparent; padding: 5px 10px; }
+  .segmented button[aria-pressed="true"] { background: var(--surface-1); box-shadow: var(--shadow); font-weight: 600; }
+  .filters label { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .filters input[type="search"] { width: 240px; }
+  .filters select { max-width: 260px; }
+
+  .banner { background: var(--surface-1); box-shadow: var(--shadow); border-left: 4px solid var(--warning);
+            border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; }
+
+  /* The list and the open task side by side when it fits. */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 520px); gap: 16px; align-items: start; }
+  .card { background: var(--surface-1); box-shadow: var(--shadow); border-radius: 12px; padding: 16px; min-width: 0; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .list { transition: opacity 150ms ease; }
+  .list.loading { opacity: .5; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.group td { font-weight: 600; border-top: 1px solid var(--axis); padding-top: 14px; }
+  tr.group .tag { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  tr.row { cursor: pointer; }
+  @media (hover: hover) and (pointer: fine) { tr.row:hover td { background: var(--wash); } }
+  tr.row[aria-selected="true"] td { background: var(--select); }
+  .open-btn { box-shadow: none; background: transparent; padding: 0; text-align: left; font: inherit; color: inherit; }
+  .open-btn:active { transform: none; }
+  .t-title { display: block; overflow-wrap: anywhere; }
+  .t-next { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+            color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  .t-next::before { content: "→ "; color: var(--muted); }
+
+  .chip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--ink-2); }
+  .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--axis); flex: none; }
+  .chip.in-progress::before { background: var(--accent); }
+  .chip.waiting::before { background: var(--warning); }
+  .chip.done::before, .chip.in-force::before { background: var(--good); }
+  .chip.parked::before, .chip.revoked::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--axis); }
+  .chip.revoked { text-decoration: line-through; }
+  .prio { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .prio.risk { color: var(--danger); font-weight: 600; }
+  .prio.high { color: var(--warning-ink); }
+  .ticket { margin-left: 6px; }
+
+  .detail { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+  .detail .key { color: var(--muted); }
+  .detail h2 { font-size: 17px; margin: 2px 0 8px; overflow-wrap: anywhere; }
+  .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); margin-bottom: 12px; }
+  .section { margin-top: 16px; }
+  .section h3 { font-size: 12px; font-weight: 500; color: var(--muted); margin: 0 0 6px; text-transform: none; }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  .next { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+  ul.plain { margin: 0; padding-left: 18px; }
+  ul.plain li { padding: 1px 0; overflow-wrap: anywhere; }
+  .notes { list-style: none; margin: 0; padding: 0; }
+  .notes li { padding: 6px 0; border-bottom: 1px solid var(--grid); }
+  .notes li:last-child { border-bottom: 0; }
+  .notes .when { display: block; color: var(--muted); font-size: 12px; }
+  .small td, .small th { padding: 4px 6px; font-size: 13px; }
+  details.more > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  .pane-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .pencil { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 13px; }
+  .pencil svg { flex: none; }
+  .pencil[aria-expanded="true"] { background: var(--surface-2); }
+  .edit[hidden] { display: none; }
+  .edit .actions { display: flex; justify-content: flex-end; }
+  .edit .cancel { box-shadow: none; background: transparent; color: var(--ink-2); padding: 5px 10px; }
+  .edit { display: grid; gap: 8px; margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--surface-2); }
+  .edit form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .edit label { color: var(--ink-2); min-width: 52px; }
+  .edit select { max-width: 100%; }
+  .edit textarea { flex: 1 1 100%; min-height: 56px; font: inherit; color: var(--ink); background: var(--surface-1);
+                   border: 0; box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px; resize: vertical; }
+  .edit .hint { flex: 1 1 100%; color: var(--muted); font-size: 12px; margin: 0; }
+  .edit button[type="submit"] { padding: 5px 12px; }
+  .banner.ok { border-left-color: var(--good); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
+
+  @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
+  @media (max-width: 1100px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .detail { position: static; max-height: none; }
+  }
+  @media (max-width: 760px) {
+    .filters input[type="search"] { width: 100%; }
+    .filters label.search { flex: 1 1 100%; }
+    th.col-next, td.col-next, th.col-upd, td.col-upd { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Work list</h1>
+      <p class="sub" id="sub">Tasks and decisions, with the time cc-statusline counted for them.</p>
+    </div>
+    <nav class="pages" aria-label="Pages">
+      <a href="/">Time</a>
+      <a href="/tasks" aria-current="page">Work list</a>
+    </nav>
+  </header>
+
+  <nav class="filters" aria-label="Filters">
+    <div class="segmented" role="group" aria-label="Status">
+      <button type="button" data-view="open">Open</button>
+      <button type="button" data-view="waiting">Waiting</button>
+      <button type="button" data-view="done">Done</button>
+      <button type="button" data-view="parked">Parked</button>
+      <button type="button" data-view="decisions">Decisions</button>
+      <button type="button" data-view="all">All</button>
+    </div>
+    <label>Project <select id="project"><option value="">All projects</option></select></label>
+    <label class="search">Search <input type="search" id="q" placeholder="Title, ticket, next step…"></label>
+  </nav>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="layout">
+    <section class="card" aria-labelledby="list-title">
+      <div class="card-head"><h2 id="list-title">Tasks</h2><span class="muted" id="count"></span></div>
+      <div class="list" id="list"></div>
+    </section>
+    <aside class="card detail" id="detail" aria-live="polite">
+      <div class="empty">Pick a task to see its description, plan, notes and sessions.</div>
+    </aside>
+  </div>
+
+  <footer>Status and project change here; everything else with <span class="mono">cc-statusline tasks …</span> or
+    <span class="mono">todo</span>. Every change goes to the task's history; the page reads the database afresh on every load.</footer>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const VIEWS = ["open", "waiting", "done", "parked", "decisions", "all"];
+const state = { view: "open", project: "", q: "", task: null, data: null };
+
+const nf1 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const hm = (s) => { const m = Math.round(s / 60); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
+const dayFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+const stampFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const when = (ts) => ts ? stampFmt.format(new Date(ts * 1000)) : "–";
+const day = (ts) => ts ? dayFmt.format(new Date(ts * 1000)) : "–";
+const webUrl = (u) => /^https?:\/\//i.test(u || "") ? u : null;   // a url from imports is not trusted as a scheme
+const label = (s) => (s || "").replace(/[-_]/g, " ");
+
+// Every piece of text from the data goes in through textContent.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children) if (c != null) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return node;
+}
+const chip = (status) => el("span", { class: `chip ${status || ""}`, text: label(status) || "no status" });
+const prio = (p) => p ? el("span", { class: `prio ${p}`, text: p }) : null;
+function ticketLink(t) {
+  if (!t.ticket) return null;
+  const link = webUrl(t.ticket_url);
+  return link ? el("a", { class: "mono ticket", href: link, target: "_blank", rel: "noopener noreferrer", text: t.ticket,
+                         onclick: (ev) => ev.stopPropagation() })
+              : el("span", { class: "mono muted ticket", text: t.ticket });
+}
+
+let bannerTimer;
+function banner(text, ok = false) {
+  const b = $("banner");
+  clearTimeout(bannerTimer);
+  b.textContent = text || ""; b.hidden = !text; b.classList.toggle("ok", ok);
+  if (ok) bannerTimer = setTimeout(() => { b.hidden = true; }, 5000);
+}
+
+// Writes carry the header the server requires; a page from another origin cannot send it.
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-CC-Statusline": "1" },
+                                body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data.task;
+}
+
+async function saved(t, message) {
+  state.task = t.task;
+  renderTask(t);
+  await load();
+  banner(message, true);
+}
+
+// A pencil, drawn like the dashboard's other inline icons: stroke only, current colour.
+function pencilIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor",
+                                        "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }))
+    svg.setAttribute(k, v);
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M11.2 2.3a1.6 1.6 0 0 1 2.3 2.3L5.4 12.7 2.5 13.5l.8-2.9z M10 3.5l2.5 2.5");
+  svg.append(path);
+  return svg;
+}
+
+// Changing a task takes a deliberate step: the form stays closed until the pencil opens it.
+function editToggle(block) {
+  const btn = el("button", { type: "button", class: "pencil", "aria-expanded": "false", "aria-controls": "task-edit",
+                             title: "Change status or project" }, pencilIcon(), "Change");
+  const close = () => { block.hidden = true; btn.setAttribute("aria-expanded", "false"); block.reset(); };
+  btn.addEventListener("click", () => {
+    if (!block.hidden) { close(); btn.focus(); return; }
+    block.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    block.querySelector("select").focus();
+  });
+  block.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { close(); btn.focus(); } });
+  block.onCancel = () => { close(); btn.focus(); };
+  return btn;
+}
+
+function editBlock(t) {
+  const status = el("select", { name: "status", "aria-label": "Status" },
+    ...t.statuses.map((s) => el("option", { value: s, text: label(s), selected: s === t.status })));
+  const outcome = el("textarea", { name: "outcome", placeholder: "Outcome: what was actually done (required to close)",
+                                   "aria-label": "Outcome", hidden: true }, t.outcome || "");
+  const showOutcome = () => { outcome.hidden = status.value !== "done"; outcome.required = status.value === "done"; };
+  status.addEventListener("change", showOutcome);
+  showOutcome();
+  const statusForm = el("form", {}, el("label", { text: "Status" }), status,
+    el("button", { type: "submit", text: "Save" }), outcome);
+  statusForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const btn = statusForm.querySelector("button");
+    btn.disabled = true;
+    try {
+      const was = t.status;
+      const next = await post("/api/task/status", { key: t.task, status: status.value, outcome: status.value === "done" ? outcome.value : "" });
+      await saved(next, `${next.task}: ${label(was)} → ${label(next.status)}.`);
+    } catch (e) { banner(`Could not change the status: ${e.message}`); btn.disabled = false; }
+  });
+
+  const projects = (state.data ? state.data.projects : []);
+  const project = el("select", { name: "project", "aria-label": "Project" },
+    ...projects.map((p) => el("option", { value: p.slug, selected: p.slug === t.project,
+                                          text: `${p.slug}${p.client ? " · " + p.client : ""}` })));
+  const hint = el("p", { class: "hint" });
+  const showHint = () => {
+    const p = projects.find((x) => x.slug === project.value);
+    hint.textContent = !p || p.slug === t.project ? "Moving gives the task a new number in that project and its client; sessions, notes, metrics and history go with it, and the old key keeps working."
+      : `Becomes ${p.client ? p.client + ":" : ""}${p.slug}#… · all its time, from its first session on, then counts for ${p.client || "no client"}.`;
+  };
+  project.addEventListener("change", showHint);
+  showHint();
+  const moveForm = el("form", {}, el("label", { text: "Project" }), project, el("button", { type: "submit", text: "Move" }), hint);
+  moveForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (project.value === t.project) return;
+    const btn = moveForm.querySelector("button");
+    btn.disabled = true;
+    try {
+      const next = await post("/api/task/move", { key: t.task, project: project.value });
+      state.project = state.project && next.project;     // keep a project filter on the task's new project
+      await saved(next, `${t.task} moved to ${next.task}.`);
+    } catch (e) { banner(`Could not move the task: ${e.message}`); btn.disabled = false; }
+  });
+  const block = el("div", { class: "edit", id: "task-edit", role: "group", "aria-label": "Change the task", hidden: true },
+    statusForm, moveForm);
+  const cancel = el("button", { type: "button", class: "cancel", text: "Cancel" });
+  cancel.addEventListener("click", () => block.onCancel());
+  block.append(el("div", { class: "actions" }, cancel));
+  // Closing puts every field back the way the task has it, so nothing half-edited is left behind.
+  block.reset = () => {
+    for (const f of [statusForm, moveForm]) f.reset();
+    status.dispatchEvent(new Event("change"));
+    project.dispatchEvent(new Event("change"));
+  };
+  return block;
+}
+
+// The view lives in the URL, so a reload, a bookmark or a link from the time page comes back to it.
+function syncUrl() {
+  const q = new URLSearchParams();
+  if (state.view !== "open") q.set("view", state.view);
+  if (state.project) q.set("project", state.project);
+  if (state.q) q.set("q", state.q);
+  if (state.task) q.set("task", state.task);
+  history.replaceState(null, "", `/tasks${q.toString() ? "?" + q : ""}`);
+}
+
+let listRequest = 0;
+async function load() {
+  syncUrl();
+  for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === state.view));
+  const req = ++listRequest, q = new URLSearchParams({ view: state.view, project: state.project, q: state.q });
+  $("list").classList.add("loading");
+  try {
+    const r = await fetch(`/api/tasks?${q}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (req !== listRequest) return;               // a later filter wins
+    state.data = data;
+    banner("");
+    fillProjects();
+    renderList();
+  } catch (e) {
+    if (req === listRequest) banner(`Could not load the work list: ${e.message}. Is the dashboard server still running?`);
+  } finally {
+    if (req === listRequest) $("list").classList.remove("loading");
+  }
+}
+
+function fillProjects() {
+  const sel = $("project");
+  sel.replaceChildren(el("option", { value: "", text: "All projects" }), ...state.data.projects.map((p) =>
+    el("option", { value: p.slug, text: `${p.slug}${p.client ? " · " + p.client : ""}${p.open ? ` (${p.open} open)` : ""}` })));
+  sel.value = state.project;
+}
+
+function renderList() {
+  const tasks = state.data.tasks;
+  const total = tasks.reduce((a, t) => a + t.seconds, 0);
+  $("count").textContent = `${tasks.length} ${tasks.length === 1 ? "item" : "items"}` + (total >= 60 ? ` · ${hm(total)} h` : "");
+  if (!tasks.length) { $("list").replaceChildren(el("div", { class: "empty", text: "Nothing here for these filters." })); return; }
+  const groups = new Map();
+  for (const t of tasks) { if (!groups.has(t.project)) groups.set(t.project, []); groups.get(t.project).push(t); }
+  const head = el("tr", {}, el("th", { class: "num", text: "#" }), el("th", { text: "Task" }), el("th", { text: "Status" }),
+    el("th", { text: "Priority" }), el("th", { class: "num", text: "Time" }), el("th", { class: "num col-upd", text: "Updated" }));
+  const body = el("tbody");
+  for (const [slug, list] of groups) {
+    const client = list[0].client;
+    body.append(el("tr", { class: "group" }, el("td", { colspan: 6 }, slug || "(no project)",
+      client ? el("span", { class: "tag", text: client }) : null, el("span", { class: "tag", text: `${list.length}` }))));
+    for (const t of list) {
+      const open = () => openTask(t.task);
+      const btn = el("button", { type: "button", class: "open-btn", "aria-label": `Open ${t.task}` },
+        el("span", { class: "t-title" }, t.title || t.task, ticketLink(t)));
+      btn.addEventListener("click", (ev) => { ev.stopPropagation(); open(); });
+      const row = el("tr", { class: "row", "data-task": t.task, "aria-selected": String(t.task === state.task) },
+        el("td", { class: "num mono muted", text: t.number != null ? String(t.number) : "" }),
+        el("td", {}, btn, t.next_step && t.kind === "task" && t.status !== "done" ? el("span", { class: "t-next col-next", text: t.next_step }) : null),
+        el("td", {}, chip(t.status)),
+        el("td", {}, prio(t.priority)),
+        el("td", { class: "num", text: t.seconds >= 60 ? hm(t.seconds) : "–" }),
+        el("td", { class: "num muted col-upd", text: day(t.updated_at || t.created_at) }));
+      row.addEventListener("click", open);
+      body.append(row);
+    }
+  }
+  $("list").replaceChildren(el("table", {}, el("thead", {}, head), body));
+}
+
+function markSelected() {
+  for (const r of $("list").querySelectorAll("tr.row")) r.setAttribute("aria-selected", String(r.dataset.task === state.task));
+}
+
+let taskRequest = 0;
+async function openTask(key) {
+  state.task = key;
+  syncUrl();
+  markSelected();
+  const req = ++taskRequest, pane = $("detail");
+  pane.replaceChildren(el("div", { class: "empty", text: "Loading…" }));
+  if (matchMedia("(max-width: 1100px)").matches)
+    pane.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  try {
+    const r = await fetch(`/api/task?key=${encodeURIComponent(key)}`);
+    const t = await r.json();
+    if (req !== taskRequest) return;
+    if (!r.ok) throw new Error(t.error || `HTTP ${r.status}`);
+    renderTask(t);
+  } catch (e) {
+    if (req === taskRequest) pane.replaceChildren(el("div", { class: "empty", text: `Could not load ${key}: ${e.message}` }));
+  }
+}
+
+const section = (title, ...content) => el("div", { class: "section" }, el("h3", { text: title }), ...content);
+const textSection = (title, value, cls = "text") => value ? section(title, el("p", { class: cls, text: value })) : null;
+const listSection = (title, items, mono = false) => items && items.length
+  ? section(title, el("ul", { class: "plain" }, ...items.map((x) => el("li", { class: mono ? "mono" : null, text: String(x) })))) : null;
+
+function renderTask(t) {
+  const edit = editBlock(t);
+  const link = webUrl(t.ticket_url);
+  const facts = [chip(t.status), el("span", { text: t.kind }), prio(t.priority),
+    t.area ? el("span", { text: `area: ${t.area}` }) : null,
+    t.ticket ? (link ? el("a", { class: "mono", href: link, target: "_blank", rel: "noopener noreferrer", text: t.ticket })
+                     : el("span", { class: "mono", text: t.ticket })) : (link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "link" }) : null),
+    el("span", { class: "tnum", text: t.seconds >= 60 ? `${hm(t.seconds)} h in ${t.sessions.length} ${t.sessions.length === 1 ? "session" : "sessions"}` : "no time counted" }),
+  ].filter(Boolean);
+  const dates = [`created ${day(t.created_at)}`, t.closed_at ? `closed ${day(t.closed_at)}` : null, `updated ${when(t.updated_at)}`].filter(Boolean).join(" · ");
+
+  const metrics = t.metrics.length ? section("Metrics", el("table", { class: "small" },
+    el("thead", {}, el("tr", {}, el("th", { text: "What" }), el("th", { class: "num", text: "Before" }), el("th", { class: "num", text: "After" }), el("th", { text: "How measured" }))),
+    el("tbody", {}, ...t.metrics.map((m) => el("tr", {}, el("td", { text: m.name }), el("td", { class: "num", text: m.before || "–" }),
+      el("td", { class: "num", text: m.after || "–" }), el("td", { class: "muted", text: m.method || "" })))))) : null;
+  const notes = t.notes.length ? section(`Notes (${t.notes.length})`, el("ul", { class: "notes" },
+    ...[...t.notes].reverse().map((n) => el("li", {}, el("span", { class: "when", text: when(n.ts) }), el("span", { class: "text", text: n.text }))))) : null;
+  const sessions = t.sessions.length ? section(`Sessions (${t.sessions.length})`, el("table", { class: "small" },
+    el("tbody", {}, ...[...t.sessions].reverse().slice(0, 30).map((s) => el("tr", {},
+      el("td", { class: "tnum", text: when(s.started) }), el("td", { class: "mono muted", text: s.short, title: s.session_id }),
+      el("td", { text: s.title || "" })))))) : null;
+  const history = t.history.length ? el("details", { class: "section more" }, el("summary", { text: `History (${t.history.length})` }),
+    el("table", { class: "small" }, el("tbody", {}, ...[...t.history].reverse().map((h) => el("tr", {},
+      el("td", { class: "tnum muted", text: when(h.ts) }), el("td", { text: label(h.field) }),
+      el("td", { class: "muted", text: h.before != null ? `${h.before} → ${h.after ?? ""}` : (h.after ?? "") })))))) : null;
+
+  $("detail").replaceChildren(...[
+    el("div", { class: "pane-head" }, el("div", { class: "mono key", text: t.task }), editToggle(edit)),
+    el("h2", { text: t.title || t.task }),
+    el("div", { class: "facts" }, ...facts),
+    el("div", { class: "muted", text: dates }),
+    t.moved_from && t.moved_from.length ? el("div", { class: "muted mono", text: `moved from ${t.moved_from.join(", ")}` }) : null,
+    edit,
+    t.next_step && t.status !== "done" ? section("Next step", el("p", { class: "text next", text: t.next_step })) : null,
+    textSection("Criteria", t.criteria),
+    textSection("Description", t.description),
+    textSection("Plan", t.plan),
+    textSection("Outcome", t.outcome),
+    textSection("Evidence", t.evidence),
+    textSection("Tests", t.tests),
+    listSection("Pitfalls", t.pitfalls),
+    listSection("Depends on", t.depends_on, true),
+    listSection("Files", t.files, true),
+    listSection("Commits", t.commits, true),
+    metrics, notes, sessions, history,
+  ].filter(Boolean));
+}
+
+for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => { state.view = b.dataset.view; load(); });
+$("project").addEventListener("change", () => { state.project = $("project").value; load(); });
+let searchTimer;
+$("q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.q = $("q").value.trim(); load(); }, 200); });
+
+const initial = new URLSearchParams(location.search);
+state.view = VIEWS.includes(initial.get("view")) ? initial.get("view") : "open";
+state.project = initial.get("project") || "";
+state.q = initial.get("q") || "";
+$("q").value = state.q;
+// The pane's project list comes with the work list, so a linked task opens after it.
+load().then(() => { if (initial.get("task")) openTask(initial.get("task")); });
+</script>
+</body>
+</html>

@@ -261,6 +261,73 @@ In a billable project, a session's time goes to a task:
 
 `[tasks]` in the config template shows how to change the ID patterns.
 
+### Task keys per client
+
+Two clients can use the same numbers: Redmine `48302` at one, Jira `CMS-100` at another that
+also has a ticket 48302. With `namespace = true` under `[tasks]`, a task found in a branch, a
+prompt or given to `task set` as a bare ID gets the client from the rules in front of it:
+
+```toml
+[tasks]
+namespace = true      # feature/48302/x in ~/dev/clients/globex → globex:48302
+```
+
+A key that already has a `client:` part is kept as typed. Without the option, keys stay bare,
+as before.
+
+### What a task is about
+
+Next to its title, a task can hold a description, a plan, a status and a link to its ticket.
+The dashboard shows them when you open the task, above its hours and session titles.
+
+```sh
+cc-statusline tasks set globex:48302 --title "Checkout rounding" --status open \
+    --url https://redmine.example.com/issues/48302 --plan @plan.md
+cc-statusline tasks show globex:48302
+cc-statusline tasks import tasks.jsonl      # one {"task": ..., "title": ..., "plan": ...} per line
+```
+
+Fields not given are kept, so setting a title never wipes a plan. An import is all or nothing:
+one bad line and no task is changed.
+
+### Work list
+
+A task can be more than a label for time: something to do, with a status, a next
+step and a history. Tasks of the work list live in a project (a repository, found by
+its `origin` remote and then by path; a worktree belongs to its clone) and get a
+number there, so their key is `client:project#N`, the same key time is logged to.
+
+```
+cc-statusline tasks add "Checkout rounds twice" --ticket SHOP-42 --criteria "14 cent errors → 0"
+cc-statusline tasks start 1            # in progress, and this session's time goes to it
+cc-statusline tasks set 1 --next-step "round in Basket::total" --pitfall "prices are cached"
+cc-statusline tasks note 1 "price comes from two places"
+cc-statusline tasks done 1 --outcome "rounded once" --metric errors 14 0 "orders since 09-01"
+cc-statusline tasks list --open --project . --time --next
+cc-statusline tasks show SHOP-42       # by number, project#N, key or ticket
+cc-statusline tasks hist --days 7      # --month 2026-09, --status-only, --project .
+cc-statusline tasks list --status waiting          # what waits for a decision, every project
+cc-statusline tasks list --project . --closed-days 7   # open, plus what was closed this week
+cc-statusline tasks doctor             # no next step, untouched for a week, waiting (--all: every project)
+cc-statusline tasks sql "SELECT task, title FROM v_tasks WHERE priority = 'risk'"   # read-only
+cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreates the list, committed
+```
+
+- **A ticket is a field, not the key.** A branch `feature/SHOP-42-x`, a prompt naming
+  SHOP-42 or an older assignment to `acme:SHOP-42` counts for the task that carries
+  the ticket. When a task and a decision share a ticket, the task wins.
+- **Every change is recorded** in `task_history` (field, before, after, author).
+  List fields (`--pitfall`, `--file`, `--commit`, `--depends-on`) are appended to.
+- **`done` needs `--outcome`**, and warns when nothing was measured: metrics carry
+  the method they were measured with, so history is more than a list of titles.
+- **The agent is told.** At session start the hook adds the current task's status,
+  next step and criteria to the context, and points at `tasks list --open --project .`
+  once a work list exists. A prompt naming the current task's ticket asks nothing.
+- `show` is a resume package: next step, criteria, description, evidence, plan,
+  pitfalls, metrics, the last notes, counted time and the sessions behind it.
+- `projects` lists projects; `project SLUG --ticket-url 'https://jira/browse/{ticket}'`
+  turns tickets into links. The `v_tasks` view is there for ad-hoc SQL.
+
 ### Commands
 
 | Command | What it does |
@@ -268,6 +335,7 @@ In a billable project, a session's time goes to a task:
 | `cc-statusline report` | Hours per client and task, this month by default. `--last-month`, `--month 2026-09`, `--from`/`--to`, `--client`, `--by day,client,task`, `--format csv` or `md`. |
 | `cc-statusline sessions --unassigned` | Billable sessions with time not logged to a task. |
 | `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`). `task clear` and `task show` too. |
+| `cc-statusline tasks set ID` | Describes a task: `--title`, `--description`, `--plan`, `--status`, `--url`; `@file` or `-` reads the text. `tasks show`, `tasks list` and `tasks import FILE` too. |
 | `cc-statusline explain --session S` | How a session's time was counted. |
 | `cc-statusline dashboard` | Opens the dashboard, starting it if it is not running. |
 | `cc-statusline import` | Backfills from transcripts. `--install` already does this once. |
@@ -359,6 +427,8 @@ tracking in `config.toml` (see [Clients and tasks](#clients-and-tasks)).
 | `BAR_STYLE` | `"solid"` | `"solid"` paints the bar with a background colour, which stays opaque on a transparent terminal. `"ascii"` draws `█` characters instead. |
 | `SHOW_GIT` | `True` | The branch is read straight from `.git/HEAD`; no `git` process is started. |
 | `SHOW_TIME` | `True` | The `⏱` segment. It reads one small file per session and never the database. |
+| `SHOW_TASKS` | `True` | Open tasks of the session's project to the right of the gauges, the most pressing first, with their count and the dashboard link closing the first line (or heading the column when that line has no room): risk first, then in progress, then by priority; the current task in the time colour, `+N` for the rest. Drawn only when they fit, at least `TASKS_MIN_W` (24) columns. The hooks put the list in the session's file, so this never touches the database either. The width comes from `COLUMNS`, then the terminal; if Claude Code shows neither, set `CC_STATUSLINE_COLUMNS` in the `env` block of `settings.json`. |
+| `SHOW_DASHBOARD_LINK` | `True` | Next to the count, `↗ Open panel`: a link (OSC 8) to the dashboard's work list for the project. A terminal without OSC 8 shows the words only. |
 | `C_*`, `BAR_*` | — | 256-colour numbers. Preview the grey ramp with `for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done` |
 
 `PRICES_TTL`, `PRICES_WARN_AFTER`, `REFRESH_LOCK_TTL` and `RECENT_DAYS` sit just below the

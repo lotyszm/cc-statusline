@@ -14,6 +14,10 @@ RULES = """
 path = "~/dev/agency/{client}/**"
 
 [[rule]]
+path = "~/dev/clients/initech/**"
+client = "initech"
+
+[[rule]]
 path = "~/dev/ai/**"
 client = "own"
 billable = false
@@ -98,6 +102,22 @@ class AttributionTest(LedgerTestCase):
         self.busy("s1", 0, 600, branch="feature/12345/hotfix")
         db.add_assignment(self.conn, "s1", "SHOP-42", self.t0, "cli", branch="feature/12345/hotfix")
         self.assertEqual(self.totals(), {("acme", "SHOP-42"): 600})
+
+    def test_a_task_key_naming_a_client_wins_over_the_directory(self):
+        self.busy("s1", 0, 600)                          # runs in acme's directory
+        db.add_assignment(self.conn, "s1", "own:claude#9", self.t0, "cli")
+        self.assertEqual(self.totals(by=("client", "billable", "task")),
+                         {("own", False, "own:claude#9"): 600})
+
+    def test_a_task_key_names_a_billable_client_from_an_unbillable_directory(self):
+        self.busy("s1", 0, 600, cwd=OWN)
+        db.add_assignment(self.conn, "s1", "initech:portal#3", self.t0, "cli")
+        self.assertEqual(self.totals(by=("client", "billable")), {("initech", True): 600})
+
+    def test_an_unknown_prefix_leaves_the_directory_client(self):
+        self.busy("s1", 0, 600)
+        db.add_assignment(self.conn, "s1", "nobody:x#1", self.t0, "cli")
+        self.assertEqual(self.totals(), {("acme", "nobody:x#1"): 600})
 
     def test_cwd_outside_any_rule_falls_back_to_the_session_project(self):
         db.touch_session(self.conn, "s1", self.t0, project_dir=ACME)

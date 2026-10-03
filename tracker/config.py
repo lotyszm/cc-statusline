@@ -50,6 +50,8 @@ currency = "PLN"
 # branch_patterns = ['(PROJ-\\d+)']
 # prompt_patterns = ['\\b(PROJ-\\d+)\\b']
 # ignore = ["CR"]
+# namespace = true      # keys become "client:ID" (acme:PROJ-12, globex:48302), so two
+#                       # clients' trackers can use the same numbers without mixing
 """
 
 
@@ -99,8 +101,15 @@ class Config:
         self.branch_patterns = tasks._compiled(t.get("branch_patterns", tasks.BRANCH_PATTERNS))
         self.prompt_patterns = tasks._compiled(t.get("prompt_patterns", tasks.PROMPT_PATTERNS))
         self.ignore = frozenset(k.upper() for k in t.get("ignore", ()))
+        self.namespace = bool(t.get("namespace", False))
         self.rates = {name: c["rate"] for name, c in data.get("clients", {}).items()
                       if isinstance(c, dict) and "rate" in c}
+        # Clients a task key may name ("own:claude#9"): those a rule names
+        # outright, with that rule's billable flag, and those with a [clients] entry.
+        self.known_clients = {name: True for name in data.get("clients", {})}
+        for rule in reversed(self.rules):
+            if rule.client:
+                self.known_clients[rule.client] = rule.billable
         self._seen = {}
 
     def classify(self, path):
@@ -123,6 +132,35 @@ class Config:
 
     def prompt_candidates(self, text):
         return tasks.prompt_candidates(text, self.prompt_patterns, self.ignore)
+
+    def qualify(self, client, task):
+        """With `namespace`, a bare task id found for a client becomes 'client:id'.
+
+        An id that already names a client, such as one typed in full, stays as it is.
+        """
+        if not (self.namespace and client and task) or ":" in task:
+            return task
+        return f"{client}:{task}"
+
+    def client_flags(self, names=()):
+        """{client: billable} for the rules' clients plus `names` (the work list's
+        projects): a name only a {client} rule produces takes that rule's flag."""
+        pattern = next((r.billable for r in self.rules if not r.client), True)
+        return {**{n: pattern for n in names if n}, **self.known_clients}
+
+    def task_client(self, task, clients=None):
+        """(client, billable) named by a task key such as 'own:claude#9', or None.
+
+        A task key carries its client, so time logged to it belongs to that
+        client wherever the session happens to run.
+        """
+        if not task or ":" not in task:
+            return None
+        clients = self.known_clients if clients is None else clients
+        name = task.split(":", 1)[0]
+        if name not in clients:
+            return None
+        return (name, clients[name])
 
     def rate(self, client):
         return self.rates.get(client)

@@ -1,9 +1,10 @@
 """Local web dashboard: one page and a small JSON API, on 127.0.0.1 only.
 
 Each request reads the config and the database afresh, so the page always
-agrees with the CLI. Assigning a task is the only write. It needs a custom
-header, which a page from another origin cannot send without a CORS preflight
-this server never approves, and the Host check stops DNS rebinding.
+agrees with the CLI. The writes - assigning a session, changing a task's
+status, moving a task to another project - need a custom header, which a page
+from another origin cannot send without a CORS preflight this server never
+approves, and the Host check stops DNS rebinding.
 """
 
 import json
@@ -17,9 +18,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, db, ledger, paths, status
+from . import config, db, ledger, paths, status, worklist
 
 PAGE = Path(__file__).resolve().parent / "static" / "dashboard.html"
+TASKS_PAGE = Path(__file__).resolve().parent / "static" / "tasks.html"
 MAX_BODY = 64 * 1024
 
 
@@ -49,7 +51,7 @@ def build_report(conn, cfg, start, end):
     split = ledger.allocate(conn, cfg, start, end, "split")
     full = ledger.allocate(conn, cfg, start, end, "full")
     primary = full if cfg.overlap == "full" else split
-    titles = db.task_titles(conn)
+    details = db.task_details(conn)
 
     clients, sessions = {}, {}
     days = defaultdict(lambda: defaultdict(float))      # day -> (client, billable, assigned) -> s
@@ -60,7 +62,10 @@ def build_report(conn, cfg, start, end):
         c = clients.setdefault(key.client, {"client": key.client, "billable": False, "seconds": 0.0,
                                             "full_seconds": 0.0, "amount": None, "tasks": {}})
         c["billable"] = c["billable"] or key.billable
-        t = c["tasks"].setdefault(key.task, {"task": key.task, "title": titles.get(key.task),
+        d = details.get(key.task)
+        t = c["tasks"].setdefault(key.task, {"task": key.task, "title": d["title"] if d else None,
+                                             "number": d["number"] if d else None,
+                                             **{f: d[f] if d else None for f in db.TASK_DETAILS},
                                              "seconds": 0.0, "full_seconds": 0.0, "amount": None,
                                              "sessions": set(), "days": defaultdict(float)})
         c["seconds"] += secs
@@ -148,6 +153,79 @@ def build_report(conn, cfg, start, end):
     }
 
 
+# Status groups the work-list view filters by; a single status works too.
+TASK_VIEWS = {
+    "open": ("task", worklist.OPEN_STATUSES),
+    "waiting": ("task", ("waiting",)),
+    "done": ("task", ("done",)),
+    "parked": ("task", ("parked",)),
+    "decisions": ("decision", None),
+    "all": (None, None),
+}
+TASK_FIELDS = ("task", "number", "project", "title", "kind", "status", "priority", "area", "ticket",
+               "next_step", "created_at", "updated_at", "closed_at")
+
+
+def _one(query, name):
+    return (query.get(name, [""])[0] or "").strip()
+
+
+def build_tasks(conn, cfg, query, now=None):
+    """The work list for the page: tasks filtered by project, view and text, with their time."""
+    view = _one(query, "view") or "open"
+    kind, statuses = TASK_VIEWS.get(view, (None, (view,)))
+    proj = _one(query, "project") or None
+    text = _one(query, "q").lower()
+    projects = {p["slug"]: p for p in conn.execute("SELECT * FROM projects")}
+    rows = worklist.tasks(conn, proj, statuses, kind)
+    if text:
+        rows = [r for r in rows if any(text in (r[f] or "").lower()
+                                       for f in ("task", "title", "ticket", "next_step", "description"))]
+    seconds = worklist.seconds_per_task(conn, cfg, end=now)
+    open_counts = defaultdict(int)
+    for r in conn.execute("SELECT project, count(*) n FROM tasks WHERE number IS NOT NULL "
+                          "AND coalesce(kind, 'task') = 'task' "
+                          f"AND status IN ({', '.join('?' * len(worklist.OPEN_STATUSES))}) GROUP BY project",
+                          worklist.OPEN_STATUSES):
+        open_counts[r["project"]] = r["n"]
+    tasks = []
+    for r in rows:
+        p = projects.get(r["project"])
+        tasks.append({**{f: r[f] for f in TASK_FIELDS}, "kind": r["kind"] or "task",
+                      "client": p["client"] if p else None, "ticket_url": worklist.ticket_url(conn, r),
+                      "seconds": seconds.get(r["task"], 0.0)})
+    return {
+        "view": view, "project": proj, "q": text,
+        "projects": sorted(({"slug": slug, "client": p["client"], "open": open_counts.get(slug, 0)}
+                            for slug, p in projects.items()), key=lambda p: (-p["open"], p["slug"])),
+        "tasks": tasks,
+    }
+
+
+def build_task(conn, cfg, key, now=None):
+    """One task in full, as `tasks show` prints it: fields, lists, metrics, notes, history, sessions."""
+    row = db.task_details(conn, key)
+    if row is None:
+        raise LookupError(f"no task {key}")
+    secs, sessions = worklist.time_of(conn, cfg, key, end=now)
+    p = worklist.project(conn, row["project"]) if row["project"] else None
+    out = {k: row[k] for k in row.keys() if k not in db.TASK_LISTS}
+    out.update({f: worklist.items(row[f]) for f in db.TASK_LISTS})
+    out.update({
+        "kind": row["kind"] or "task", "client": p["client"] if p else None,
+        "ticket_url": worklist.ticket_url(conn, row), "seconds": secs,
+        "statuses": list(worklist.STATUSES.get(row["kind"] or "task", ())),
+        "moved_from": [r["old_task"] for r in conn.execute(
+            "SELECT old_task FROM task_moves WHERE new_task = ? ORDER BY ts", (key,))],
+        "metrics": [dict(m) for m in worklist.metrics(conn, key)],
+        "notes": [dict(n) for n in worklist.notes(conn, key)],
+        "history": [dict(h) for h in worklist.history(conn, key)][-100:],
+        "sessions": [{"session_id": s["session_id"], "short": s["session_id"][:8], "started": s["first_ts"],
+                      "title": s["title"]} for s in sessions],
+    })
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "cc-statusline"
 
@@ -174,6 +252,20 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path in ("/", "/index.html"):
             return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+        if url.path == "/tasks":
+            return self._send(200, TASKS_PAGE.read_bytes(), "text/html; charset=utf-8")
+        if url.path in ("/api/tasks", "/api/task"):
+            query = parse_qs(url.query)
+            cfg = config.load()
+            conn = db.connect()
+            try:
+                if url.path == "/api/tasks":
+                    return self._send(200, build_tasks(conn, cfg, query))
+                return self._send(200, build_task(conn, cfg, _one(query, "key")))
+            except LookupError as e:
+                return self._send(404, {"error": str(e)})
+            finally:
+                conn.close()
         if url.path == "/api/report":
             now = time.time()
             first, last, start, end = _range(parse_qs(url.query), now)
@@ -207,7 +299,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok() or self.headers.get("X-CC-Statusline") != "1":
             return self._send(403, {"error": "forbidden"})
-        if urlparse(self.path).path != "/api/assign":
+        path = urlparse(self.path).path
+        if path not in ("/api/assign", "/api/task/status", "/api/task/move"):
             return self._send(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -216,6 +309,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except ValueError:
             return self._send(400, {"error": "expected a JSON object"})
+        if path != "/api/assign":
+            return self._task_write(path, body)
         task = str(body.get("task") or "").strip() or None
         title = str(body.get("title") or "").strip() or None
         cfg = config.load()
@@ -225,6 +320,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid = db.find_session(conn, str(body.get("session_id") or ""))
             except LookupError as e:
                 return self._send(404, {"error": str(e)})
+            task = cfg.qualify(cfg.classify(db.session(conn, sid)["project_dir"])[0], task)
             now = time.time()
             effective = db.session(conn, sid)["first_ts"] if body.get("from_start", True) else now
             db.add_assignment(conn, sid, task, effective, "dashboard", now, branch=db.latest_branch(conn, sid))
@@ -234,6 +330,25 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         return self._send(200, {"ok": True, "session_id": sid, "task": task})
+
+
+    def _task_write(self, path, body):
+        key = str(body.get("key") or "").strip()
+        cfg = config.load()
+        conn = db.connect()
+        try:
+            if path == "/api/task/status":
+                worklist.set_status(conn, key, str(body.get("status") or "").strip(),
+                                    str(body.get("outcome") or "").strip() or None, author="dashboard")
+            else:
+                key = worklist.move(conn, key, str(body.get("project") or "").strip(), author="dashboard")
+            return self._send(200, {"ok": True, "task": build_task(conn, cfg, key)})
+        except LookupError as e:
+            return self._send(404, {"error": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        finally:
+            conn.close()
 
 
 def make_server(port):

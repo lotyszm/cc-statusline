@@ -48,6 +48,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 # ══════════════════════════════ CONFIGURATION ══════════════════════════════
 
@@ -61,6 +62,10 @@ BAR_STYLE = "solid"             # "solid": bars drawn with background colour, wh
 SHOW_GIT = True                 # show branch, read straight from .git/HEAD
 SHOW_TIME = True                # show the task and today's tracked time (see Time
                                 # tracking in the README); absent when not tracked
+SHOW_TASKS = True               # open tasks of the project to the right of the gauges,
+                                # when the terminal is wide enough (gauges layout)
+SHOW_DASHBOARD_LINK = True      # "Open panel": a link to the dashboard's work list above them
+TASKS_MIN_W = 24                # narrowest task column worth drawing
 
 # 256-colour palette. Higher index means lighter in the 232-255 greyscale ramp.
 # Preview:  for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done
@@ -105,12 +110,12 @@ LABELS = {
            "new_dir": "new directory", "no_limit": "limit n/a", "tok": "tok",
            "no_prices": "no price data", "stale": "prices {d}d old",
            "unpriced": "unpriced model", "no_task": "no task",
-           "run_install": "run --install"},
+           "run_install": "run --install", "todo": "todo", "none_open": "nothing open", "open_panel": "Open panel"},
     "pl": {"session": "sesja", "project": "projekt", "total": "razem",
            "new_dir": "nowy katalog", "no_limit": "limit n/d", "tok": "tok",
            "no_prices": "brak cennika", "stale": "cennik {d}d",
            "unpriced": "model spoza cennika", "no_task": "bez zadania",
-           "run_install": "uruchom --install"},
+           "run_install": "uruchom --install", "todo": "todo", "none_open": "nic otwartego", "open_panel": "Otwórz panel"},
 }
 
 # ══════════════════════════════ PATHS AND STATE ════════════════════════════
@@ -138,7 +143,7 @@ DATA_DIR = (Path(os.environ["CC_STATUSLINE_DATA_DIR"]).expanduser() if os.enviro
 STATUS_DIR = DATA_DIR / "status"
 NO_TRACKING = DATA_DIR / "no-tracking"      # left by --install --no-tracking
 REPO_URL = "https://github.com/lotyszm/cc-statusline"
-TRACKER_COMMANDS = ("report", "sessions", "task", "explain", "status", "import", "dashboard")
+TRACKER_COMMANDS = ("report", "sessions", "task", "tasks", "explain", "status", "import", "dashboard")
 DASHBOARD_PORT = 8765
 
 PRICE_MAP = {}          # model -> [in, out, cache_write_5m, cache_read, cache_write_1h]
@@ -585,7 +590,9 @@ def hooks_wired(account_dir):
 # ══════════════════════════════ FORMATTING ═════════════════════════════════
 
 R, B = "\033[0m", "\033[1m"
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Colours, and OSC 8 hyperlinks (ESC ] 8 ; ; URL ESC \), neither of which takes a column.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b\x07]*(?:\x1b\\|\x07)")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def fg(idx, s):
@@ -668,6 +675,77 @@ def short_path(p):
         s = "~" + s[len(home):]
     parts = s.split("/")
     return "/".join(parts[-2:]) if len(parts) > 3 else s
+
+
+def terminal_width():
+    """Columns of the terminal, or 0 when unknown.
+
+    COLUMNS first, then the controlling terminal, then CC_STATUSLINE_COLUMNS,
+    which can be set in the `env` block of settings.json when neither is seen.
+    """
+    def number(name):
+        try:
+            return int(os.environ.get(name) or 0)
+        except ValueError:
+            return 0
+    cols = number("COLUMNS")
+    if cols:
+        return cols
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        fd = None
+    if fd is not None:
+        try:
+            return os.get_terminal_size(fd).columns
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return number("CC_STATUSLINE_COLUMNS")
+
+
+def link(url, text):
+    """Text that opens `url` when clicked, in terminals that know OSC 8; plain text elsewhere."""
+    # BEL ends the sequence, as in Claude Code's own status line examples.
+    return f"\x1b]8;;{url}\x07{text}\x1b]8;;\x07"
+
+
+def task_head(open_, width):
+    """The count of open tasks and, room permitting, a link to the dashboard's work list."""
+    count = int(open_.get("count") or 0)
+    head = lbl(L("todo")) + " " + (val(str(count)) if open_.get("items") else fg(C_MUTED, L("none_open")))
+    if SHOW_DASHBOARD_LINK:
+        url = f"http://127.0.0.1:{DASHBOARD_PORT}/tasks?project={quote(str(open_.get('project') or ''))}"
+        text = f"↗ {L('open_panel')}"
+        if vlen(head) + 3 + len(text) <= width:
+            head += f" {fg(C_SEP, chr(183))} " + fg(C_PATH, link(url, text))
+    return head
+
+
+def task_rows(open_, current, width, n):
+    """Up to `n` of the most pressing open tasks, the last one marked +N when more are open."""
+    items = (open_.get("items") or [])[:n]
+    if not items:
+        return []
+    count = int(open_.get("count") or 0)
+    lw, nw = 4, max(len(f"#{it.get('number')}") for it in items)
+    marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
+    rows = []
+    for i, it in enumerate(items):
+        last = i == len(items) - 1 and count > len(items)
+        prefix = pad(fg(C_MUTED, f"+{count - len(items)}"), lw) if last else " " * lw
+        mark, mc = marks.get(it.get("status"), ("·", C_SEP))
+        num = f"#{it.get('number')}"
+        num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
+        room = width - lw - nw - 3
+        # A title is user data: control characters (ESC and the like) never reach the terminal.
+        title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
+        if len(title) > room:
+            title = title[:max(0, room - 1)] + "…"
+        title = fg(C_TASK, title) if it.get("task") == current else val(title)
+        rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
+    return rows
 
 
 # ══════════════════════════════ RENDER ═════════════════════════════════════
@@ -818,6 +896,23 @@ def render(data):
             pair(L("project"), pcost, ptoks),
         ]))
 
+    open_ = st.get("open") if st else None
+    if SHOW_TASKS and isinstance(open_, dict):
+        tw = terminal_width()
+        x = max(vlen(r) for r in out[1:4]) + 3
+        # Claude Code pads the line by one column on each side.
+        room = tw - x - 2
+        if room >= TASKS_MIN_W:
+            # The count and the dashboard link close the first line when they fit there,
+            # leaving all three gauge rows to tasks; otherwise they head the column.
+            head = task_head(open_, room)
+            if vlen(out[0]) + 3 + vlen(head) <= tw - 2:
+                out[0] += sep + head
+                cells = task_rows(open_, st.get("task"), room, 3)
+            else:
+                cells = [head] + task_rows(open_, st.get("task"), room, 2)
+            for i, cell in enumerate(cells, start=1):
+                out[i] = pad(out[i], x - 3) + sep + cell
     return "\n".join(out)
 
 
@@ -1086,6 +1181,8 @@ script as `cc-statusline`:
   cc-statusline report [--last-month | --month YYYY-MM | --from D --to D] [--format csv|md]
   cc-statusline sessions --unassigned    client time not logged to a task yet
   cc-statusline task set ID --session S  log a session's time to a task
+  cc-statusline tasks set ID --plan @f   describe a task: title, description, plan, status
+  cc-statusline tasks list --open --project .   the work list: add, start, note, done, show, hist
   cc-statusline explain --session S      how a session's time was counted
   cc-statusline dashboard                open the local dashboard
   cc-statusline import                   backfill from transcripts
