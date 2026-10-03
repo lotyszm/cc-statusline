@@ -143,6 +143,15 @@ class DashboardTest(ServedTestCase):
         self.assertEqual((status, ctype.split(";")[0]), (200, "text/html"))
         self.assertIn(b"<html", body.lower())
 
+    def test_both_pages_carry_the_theme_switch(self):
+        for path in ("/", "/tasks"):
+            _, _, raw = self.request(path)
+            page = raw.decode()
+            # Read in <head>, so a dark page never flashes light on the way in.
+            self.assertIn("cc-statusline-theme", page.split("</head>")[0], path)
+            for choice in ("auto", "light", "dark"):
+                self.assertIn(f'data-theme-choice="{choice}"', page, path)
+
 
 
 class ServeTest(IsolatedTestCase):

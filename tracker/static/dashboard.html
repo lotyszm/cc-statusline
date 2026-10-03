@@ -5,55 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
 <title>Agent time · cc-statusline</title>
+<script>
+  // The theme picked with the switch, set before anything is drawn; none follows the system.
+  try { const t = localStorage.getItem("cc-statusline-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
+  /* Every colour holds both themes: light-dark() picks by color-scheme, which follows
+     the system unless the theme switch set data-theme on <html>. */
   :root {
-    color-scheme: light;
-    --page: #f9f9f7;
-    --surface-1: #fcfcfb;
-    --surface-2: #f3f2ee;
-    --ink: #0b0b0b;
-    --ink-2: #52514e;
+    color-scheme: light dark;
+    --page: light-dark(#f9f9f7, #0d0d0d);
+    --surface-1: light-dark(#fcfcfb, #1a1a19);
+    --surface-2: light-dark(#f3f2ee, #232321);
+    --ink: light-dark(#0b0b0b, #ffffff);
+    --ink-2: light-dark(#52514e, #c3c2b7);
     --muted: #898781;
-    --grid: #e1e0d9;
-    --axis: #c3c2b7;
-    --ring: rgba(11, 11, 11, 0.08);
-    --shadow: 0 0 0 1px rgba(11, 11, 11, 0.06), 0 1px 2px rgba(11, 11, 11, 0.04);
-    --shadow-pop: 0 0 0 1px rgba(11, 11, 11, 0.06), 0 8px 24px rgba(11, 11, 11, 0.10);
-    --wash: rgba(11, 11, 11, 0.04);
-    --series-1: #2a78d6;          /* billable, with a task */
-    --series-2: #eb6834;          /* billable, no task yet */
-    --other: #cfcdc5;             /* not billable: de-emphasis gray */
-    --magnitude: #2a78d6;
+    --grid: light-dark(#e1e0d9, #2c2c2a);
+    --axis: light-dark(#c3c2b7, #383835);
+    --ring: light-dark(rgba(11, 11, 11, 0.08), rgba(255, 255, 255, 0.10));
+    --shadow: 0 0 0 1px light-dark(rgba(11, 11, 11, 0.06), rgba(255, 255, 255, 0.08)),
+              0 1px 2px light-dark(rgba(11, 11, 11, 0.04), rgba(0, 0, 0, 0.4));
+    --shadow-pop: 0 0 0 1px light-dark(rgba(11, 11, 11, 0.06), rgba(255, 255, 255, 0.10)),
+                  0 8px 24px light-dark(rgba(11, 11, 11, 0.10), rgba(0, 0, 0, 0.5));
+    --wash: light-dark(rgba(11, 11, 11, 0.04), rgba(255, 255, 255, 0.05));
+    --series-1: light-dark(#2a78d6, #3987e5);     /* billable, with a task */
+    --series-2: light-dark(#eb6834, #d95926);     /* billable, no task yet */
+    --other: light-dark(#cfcdc5, #4a4a46);        /* not billable: de-emphasis gray */
+    --magnitude: light-dark(#2a78d6, #3987e5);
     --warning: #fab219;
-    --good: #006300;
-    --focus: #2a78d6;
-    --select: rgba(42, 120, 214, 0.10);
+    --good: light-dark(#006300, #0ca30c);
+    --focus: light-dark(#2a78d6, #3987e5);
+    --select: light-dark(rgba(42, 120, 214, 0.10), rgba(57, 135, 229, 0.18));
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --page: #0d0d0d;
-      --surface-1: #1a1a19;
-      --surface-2: #232321;
-      --ink: #ffffff;
-      --ink-2: #c3c2b7;
-      --muted: #898781;
-      --grid: #2c2c2a;
-      --axis: #383835;
-      --ring: rgba(255, 255, 255, 0.10);
-      --shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.4);
-      --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.10), 0 8px 24px rgba(0, 0, 0, 0.5);
-      --wash: rgba(255, 255, 255, 0.05);
-      --series-1: #3987e5;
-      --series-2: #d95926;
-      --other: #4a4a46;
-      --magnitude: #3987e5;
-      --good: #0ca30c;
-      --focus: #3987e5;
-      --select: rgba(57, 135, 229, 0.18);
-    }
-  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
 
   * { box-sizing: border-box; }
   body {
@@ -71,6 +57,9 @@
   .pages { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
   .pages a { padding: 5px 12px; border-radius: 8px; color: var(--ink-2); text-decoration: none; }
   .pages a[aria-current="page"] { background: var(--surface-1); box-shadow: var(--shadow); color: var(--ink); font-weight: 600; }
+  .head-end { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .segmented.theme button { display: inline-flex; align-items: center; padding: 6px 8px; color: var(--ink-2); }
+  .segmented.theme button[aria-pressed="true"] { color: var(--ink); }
   .muted { color: var(--muted); }
 
   button, input, select {
@@ -248,10 +237,17 @@
       <h1>Agent time</h1>
       <p class="sub" id="sub">Time spent working with Claude Code, recorded by cc-statusline.</p>
     </div>
-    <nav class="pages" aria-label="Pages">
-      <a href="/" aria-current="page">Time</a>
-      <a href="/tasks">Work list</a>
-    </nav>
+    <div class="head-end">
+      <div class="segmented theme" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="auto" title="Theme: follow the system" aria-label="Theme: follow the system"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11.5V14"/></svg></button>
+        <button type="button" data-theme-choice="light" title="Theme: light" aria-label="Theme: light"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-theme-choice="dark" title="Theme: dark" aria-label="Theme: dark"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 1 1 6.4 2.5a4.5 4.5 0 0 0 7.1 7.1z"/></svg></button>
+      </div>
+      <nav class="pages" aria-label="Pages">
+        <a href="/" aria-current="page">Time</a>
+        <a href="/tasks">Work list</a>
+      </nav>
+    </div>
   </header>
 
   <nav class="filters" aria-label="Filters">
@@ -936,6 +932,22 @@ $("toggle-table").addEventListener("click", () => {
 });
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.data && renderChart(state.data), 120); });
+
+// The theme switch: auto follows the system; light and dark are kept in this browser, for both pages.
+const THEME_KEY = "cc-statusline-theme";
+function applyTheme(choice) {
+  if (choice === "light" || choice === "dark") document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  const current = document.documentElement.dataset.theme || "auto";
+  for (const b of document.querySelectorAll("[data-theme-choice]")) b.setAttribute("aria-pressed", String(b.dataset.themeChoice === current));
+}
+for (const b of document.querySelectorAll("[data-theme-choice]")) b.addEventListener("click", () => {
+  const choice = b.dataset.themeChoice;
+  try { if (choice === "auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, choice); } catch (e) {}
+  applyTheme(choice);
+});
+window.addEventListener("storage", (ev) => { if (ev.key === THEME_KEY) applyTheme(ev.newValue); });   // the other page, in another tab
+applyTheme(document.documentElement.dataset.theme);
 
 const initial = new URLSearchParams(location.search);
 if (validDay(initial.get("from")) && validDay(initial.get("to"))) {

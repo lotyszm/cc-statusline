@@ -5,50 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
 <title>Work list · cc-statusline</title>
+<script>
+  // The theme picked with the switch, set before anything is drawn; none follows the system.
+  try { const t = localStorage.getItem("cc-statusline-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
   /* Tokens and base components follow dashboard.html, so both pages read as one tool. */
   :root {
-    color-scheme: light;
-    --page: #f9f9f7;
-    --surface-1: #fcfcfb;
-    --surface-2: #f3f2ee;
-    --ink: #0b0b0b;
-    --ink-2: #52514e;
+    color-scheme: light dark;
+    --page: light-dark(#f9f9f7, #0d0d0d);
+    --surface-1: light-dark(#fcfcfb, #1a1a19);
+    --surface-2: light-dark(#f3f2ee, #232321);
+    --ink: light-dark(#0b0b0b, #ffffff);
+    --ink-2: light-dark(#52514e, #c3c2b7);
     --muted: #898781;
-    --grid: #e1e0d9;
-    --axis: #c3c2b7;
-    --shadow: 0 0 0 1px rgba(11, 11, 11, 0.06), 0 1px 2px rgba(11, 11, 11, 0.04);
-    --wash: rgba(11, 11, 11, 0.04);
-    --accent: #2a78d6;
+    --grid: light-dark(#e1e0d9, #2c2c2a);
+    --axis: light-dark(#c3c2b7, #383835);
+    --shadow: 0 0 0 1px light-dark(rgba(11, 11, 11, 0.06), rgba(255, 255, 255, 0.08)),
+              0 1px 2px light-dark(rgba(11, 11, 11, 0.04), rgba(0, 0, 0, 0.4));
+    --wash: light-dark(rgba(11, 11, 11, 0.04), rgba(255, 255, 255, 0.05));
+    --accent: light-dark(#2a78d6, #3987e5);
     --warning: #fab219;
-    --warning-ink: #8a5a00;
-    --good: #006300;
-    --danger: #b42318;
-    --focus: #2a78d6;
-    --select: rgba(42, 120, 214, 0.10);
+    --warning-ink: light-dark(#8a5a00, #f5c04a);
+    --good: light-dark(#006300, #0ca30c);
+    --danger: light-dark(#b42318, #f97066);
+    --focus: light-dark(#2a78d6, #3987e5);
+    --select: light-dark(rgba(42, 120, 214, 0.10), rgba(57, 135, 229, 0.18));
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --page: #0d0d0d;
-      --surface-1: #1a1a19;
-      --surface-2: #232321;
-      --ink: #ffffff;
-      --ink-2: #c3c2b7;
-      --muted: #898781;
-      --grid: #2c2c2a;
-      --axis: #383835;
-      --shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.4);
-      --wash: rgba(255, 255, 255, 0.05);
-      --accent: #3987e5;
-      --warning-ink: #f5c04a;
-      --good: #0ca30c;
-      --danger: #f97066;
-      --focus: #3987e5;
-      --select: rgba(57, 135, 229, 0.18);
-    }
-  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
 
   * { box-sizing: border-box; }
   body {
@@ -161,6 +147,8 @@
   footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
 
   .head-end { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .segmented.theme button { display: inline-flex; align-items: center; padding: 6px 8px; color: var(--ink-2); }
+  .segmented.theme button[aria-pressed="true"] { color: var(--ink); }
   .guide p { margin: 0 0 6px; }
   .guide p:last-child { margin-bottom: 0; }
   .guide code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -191,6 +179,11 @@
     </div>
     <div class="head-end">
       <button type="button" id="guide-open" aria-controls="detail">How to use</button>
+      <div class="segmented theme" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="auto" title="Theme: follow the system" aria-label="Theme: follow the system"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11.5V14"/></svg></button>
+        <button type="button" data-theme-choice="light" title="Theme: light" aria-label="Theme: light"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-theme-choice="dark" title="Theme: dark" aria-label="Theme: dark"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 1 1 6.4 2.5a4.5 4.5 0 0 0 7.1 7.1z"/></svg></button>
+      </div>
       <nav class="pages" aria-label="Pages">
         <a href="/">Time</a>
         <a href="/tasks" aria-current="page">Work list</a>
@@ -610,6 +603,22 @@ $("project").addEventListener("change", () => { state.project = $("project").val
 let searchTimer;
 $("q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { state.q = $("q").value.trim(); load(); }, 200); });
 $("guide-open").addEventListener("click", () => { showGuide(); revealPane(); });
+
+// The theme switch: auto follows the system; light and dark are kept in this browser, for both pages.
+const THEME_KEY = "cc-statusline-theme";
+function applyTheme(choice) {
+  if (choice === "light" || choice === "dark") document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  const current = document.documentElement.dataset.theme || "auto";
+  for (const b of document.querySelectorAll("[data-theme-choice]")) b.setAttribute("aria-pressed", String(b.dataset.themeChoice === current));
+}
+for (const b of document.querySelectorAll("[data-theme-choice]")) b.addEventListener("click", () => {
+  const choice = b.dataset.themeChoice;
+  try { if (choice === "auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, choice); } catch (e) {}
+  applyTheme(choice);
+});
+window.addEventListener("storage", (ev) => { if (ev.key === THEME_KEY) applyTheme(ev.newValue); });   // the other page, in another tab
+applyTheme(document.documentElement.dataset.theme);
 
 const initial = new URLSearchParams(location.search);
 state.view = VIEWS.includes(initial.get("view")) ? initial.get("view") : "open";
