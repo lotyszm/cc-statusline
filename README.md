@@ -305,7 +305,12 @@ cc-statusline tasks note 1 "price comes from two places"
 cc-statusline tasks done 1 --outcome "rounded once" --metric errors 14 0 "orders since 09-01"
 cc-statusline tasks list --open --project . --time --next
 cc-statusline tasks show SHOP-42       # by number, project#N, key or ticket
-cc-statusline tasks hist --days 7
+cc-statusline tasks hist --days 7      # --month 2026-09, --status-only, --project .
+cc-statusline tasks list --status waiting          # what waits for a decision, every project
+cc-statusline tasks list --project . --closed-days 7   # open, plus what was closed this week
+cc-statusline tasks doctor             # no next step, untouched for a week, waiting (--all: every project)
+cc-statusline tasks sql "SELECT task, title FROM v_tasks WHERE priority = 'risk'"   # read-only
+cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreates the list, committed
 ```
 
 - **A ticket is a field, not the key.** A branch `feature/SHOP-42-x`, a prompt naming

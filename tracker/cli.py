@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, db, ledger, report, status, worklist
+from . import config, db, ledger, paths, report, status, worklist
 
 
 # ── dates ────────────────────────────────────────────────────────────────────
@@ -210,19 +210,26 @@ def _show(conn, cfg, r, out, full=False):
         print("\nsessions", file=out)
         for s in (sess if full else sess[-5:]):
             print(f"  {s['session_id'][:8]}  {_local(s['first_ts'])}  {(s['title'] or '')[:60]}", file=out)
+    hist = worklist.history(conn, key)
+    if hist:
+        print("\nchanges" + ("" if full or len(hist) <= 5 else f" (last 5 of {len(hist)})"), file=out)
+        for h in (hist if full else hist[-5:]):
+            change = h["after"] if h["before"] is None else f"{h['before']} → {h['after']}"
+            print(f"  {_local(h['ts'])}  {h['field']}: {(change or '')[:90]}", file=out)
 
 
 def cmd_tasks(args, conn, cfg, now, out):
     if args.action == "list":
         statuses = [x.strip() for x in args.status.split(",")] if args.status else None
-        if args.open:
+        if args.open or (args.closed_days and not statuses):
             statuses = list(db.OPEN_STATUSES)
-        if args.project or args.kind or args.area or args.priority or args.open:
+        closed_since = now - args.closed_days * 86400 if args.closed_days else None
+        if args.project or args.kind or args.area or args.priority or args.open or closed_since:
             proj = args.project
             if proj == ".":
                 here = _here(conn)
                 proj = here["slug"] if here else "\0"
-            rows = worklist.tasks(conn, proj, statuses, args.kind, args.area, args.priority)
+            rows = worklist.tasks(conn, proj, statuses, args.kind, args.area, args.priority, closed_since)
         else:
             rows = [r for r in db.task_details(conn).values()
                     if not statuses or (r["status"] or "").lower() in [x.lower() for x in statuses]]
@@ -280,12 +287,78 @@ def cmd_tasks(args, conn, cfg, now, out):
             _err(f"no task '{args.task}'")
             return 2
         since = now - args.days * 86400 if args.days else None
+        until = None
+        if args.month:
+            try:
+                start = datetime.strptime(args.month, "%Y-%m")
+            except ValueError:
+                _err("--month takes YYYY-MM")
+                return 2
+            since = start.timestamp()
+            until = (start.replace(day=28) + timedelta(days=4)).replace(day=1).timestamp()
         rows = worklist.history(conn, key, since)
+        if until is not None:
+            rows = [h for h in rows if h["ts"] < until]
+        if args.status_only:
+            rows = [h for h in rows if h["field"] in ("created", "status", "moved")]
+        if args.project and not key:
+            proj = _here(conn)["slug"] if args.project == "." and _here(conn) else args.project
+            inside = {r["task"] for r in conn.execute("SELECT task FROM tasks WHERE project = ?", (proj,))}
+            rows = [h for h in rows if h["task"] in inside]
         for h in rows:
             change = h["after"] if h["before"] is None else f"{h['before']} → {h['after']}"
             print(f"{_local(h['ts'])}  {h['task']}  {h['field']}: {(change or '')[:100]}"
                   + (f"  ({h['author']})" if h["author"] else ""), file=out)
         return 0 if rows else (print("no changes", file=out) or 0)
+
+    if args.action == "doctor":
+        here = None if args.all else _here(conn)
+        groups = worklist.doctor(conn, here["slug"] if here else None, now)
+        print(f"project {here['slug']}" if here else "all projects", file=out)
+        for label, rows in groups:
+            print(f"\n{label}: {len(rows)}", file=out)
+            for r in rows:
+                print(f"  {r['task']:<24} {_local(r['updated_at'], '%Y-%m-%d')}  {r['title'] or ''}", file=out)
+        loose = conn.execute("SELECT count(*) FROM tasks WHERE number IS NULL").fetchone()[0]
+        print(f"\ntime keys without a work-list record (tickets, plain keys): {loose}", file=out)
+        return 0
+
+    if args.action == "sql":
+        import sqlite3
+        ro = sqlite3.connect(f"file:{paths.db_path()}?mode=ro", uri=True)
+        try:
+            cur = ro.execute(args.query)
+            if cur.description:
+                print(" | ".join(d[0] for d in cur.description), file=out)
+                for row in cur:
+                    print(" | ".join("" if v is None else str(v) for v in row), file=out)
+        except sqlite3.Error as e:
+            _err(f"sql: {e}")
+            return 2
+        finally:
+            ro.close()
+        return 0
+
+    if args.action == "dump":
+        if not args.out:
+            worklist.dump(conn, out)
+            return 0
+        target = Path(args.out).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            worklist.dump(conn, f)
+        tmp.replace(target)
+        print(f"dump: {target} ({target.stat().st_size} B)", file=out)
+        if args.git:
+            import subprocess
+            repo = str(target.parent)
+            subprocess.run(["git", "-C", repo, "add", target.name], capture_output=True)
+            done = subprocess.run(["git", "-C", repo, "commit", "-q", "-m",
+                                   f"work list dump {datetime.fromtimestamp(now):%Y-%m-%dT%H:%M}", "--", target.name],
+                                  capture_output=True, text=True)
+            print("git: " + ("committed" if done.returncode == 0 else "no changes"), file=out)
+        return 0
 
     if args.action == "add":
         proj = worklist.project(conn, args.project) if args.project else worklist.ensure_project(conn, cfg, os.getcwd(), now)
@@ -634,6 +707,7 @@ def build_parser():
     kl.add_argument("--time", action="store_true", help="counted time per task (reads the whole history)")
     kl.add_argument("--next", action="store_true", help="the next step under each task")
     kl.add_argument("--json", action="store_true", help="a JSON array, for scripts and plugins")
+    kl.add_argument("--closed-days", type=float, metavar="N", help="also what was closed in the last N days")
     kw = ksub.add_parser("show", help="one task in full: what to know to pick it up again")
     ref(kw)
     kw.add_argument("--all", action="store_true", help="every note and session, not the last five")
@@ -671,6 +745,15 @@ def build_parser():
     kh.add_argument("task", nargs="?")
     kh.add_argument("--project")
     kh.add_argument("--days", type=float, help="only the last N days")
+    kh.add_argument("--month", metavar="YYYY-MM", help="only this month")
+    kh.add_argument("--status-only", action="store_true", help="only additions, status changes and moves")
+    kdoc = ksub.add_parser("doctor", help="what needs a move: no next step, untouched, waiting for a decision")
+    kdoc.add_argument("--all", action="store_true", help="every project, not only the current directory's")
+    ksql = ksub.add_parser("sql", help="a read-only query, e.g. \"SELECT * FROM v_tasks WHERE priority = 'risk'\"")
+    ksql.add_argument("query")
+    kdump = ksub.add_parser("dump", help="the work list as SQL that recreates it (no time events)")
+    kdump.add_argument("--out", help="write to this file instead of stdout")
+    kdump.add_argument("--git", action="store_true", help="commit the file in its directory's repository")
     ksub.add_parser("projects", help="projects and their open tasks")
     kp = ksub.add_parser("project", help="create or change a project")
     kp.add_argument("slug")

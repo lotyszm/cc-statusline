@@ -22,6 +22,10 @@ CLOSED_STATUSES = ("done", "parked")
 STATUSES = {"task": OPEN_STATUSES + CLOSED_STATUSES, "decision": ("in-force", "revoked")}
 # Statuses that close a record: they set closed_at, the others clear it.
 CLOSING = ("done", "parked", "revoked")
+# A task in progress whose record has not changed for this long needs a look.
+STALE_DAYS = 7
+# What a dump of the work list holds: everything but the raw time events.
+DUMP_TABLES = ("projects", "tasks", "task_notes", "task_metrics", "task_history", "task_moves", "assignments")
 
 
 # ── projects ─────────────────────────────────────────────────────────────────
@@ -390,3 +394,34 @@ def history(conn, key=None, since=None):
         args.append(since)
     sql = "SELECT * FROM task_history" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY ts, id"
     return conn.execute(sql, args).fetchall()
+
+
+# ── upkeep ───────────────────────────────────────────────────────────────────
+
+def doctor(conn, project=None, now=None):
+    """What needs a move: (label, rows) groups, in the order they should be read."""
+    now = now or time.time()
+    rows = tasks(conn, project, OPEN_STATUSES, kind="task")
+    going = [r for r in rows if r["status"] == "in-progress"]
+    return [
+        ("in progress without a next step", [r for r in going if not r["next_step"]]),
+        (f"in progress, untouched for over {STALE_DAYS} days",
+         [r for r in going if r["next_step"] and now - (r["updated_at"] or 0) > STALE_DAYS * 86400]),
+        ("waiting for a decision", [r for r in rows if r["status"] == "waiting"]),
+    ]
+
+
+def dump(conn, out):
+    """The work list as SQL that recreates it in an empty database, rows in a stable order."""
+    out.write("BEGIN;\n")
+    for table in DUMP_TABLES:
+        ddl = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+        if ddl is None:
+            continue
+        out.write(ddl[0].replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1) + ";\n")
+        cols = [c[1] for c in conn.execute(f"PRAGMA table_info({table})")]
+        for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid"):
+            values = ", ".join("NULL" if v is None else str(v) if isinstance(v, (int, float))
+                               else "'" + str(v).replace("'", "''") + "'" for v in row)
+            out.write(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({values});\n")
+    out.write("COMMIT;\n")

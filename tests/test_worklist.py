@@ -254,6 +254,95 @@ class WorklistTest(IsolatedTestCase):
         self.assertIsNone(status.open_tasks(self.conn, self.tmp))
         self.assertIsNone(status.open_tasks(self.conn, None))
 
+    # ── upkeep ──────────────────────────────────────────────────────────────
+
+    def test_doctor_names_what_needs_a_move(self):
+        bare = self.add("No next step")
+        self.run_cli("tasks", "set", bare, "--status", "in-progress", now=self.t0)
+        old = self.add("Old step", "--next-step", "x")
+        self.run_cli("tasks", "set", old, "--status", "in-progress", now=self.t0)
+        self.add("Ask client", "--status", "waiting")
+        self.add("Fresh", "--status", "open")
+        code, out, _ = self.run_cli("tasks", "doctor", now=self.t0 + 8 * 86400)
+        self.assertEqual(code, 0)
+        self.assertIn("project storefront", out)
+        self.assertRegex(out, r"in progress without a next step: 1\n\s+acme:storefront#1 ")
+        self.assertRegex(out, r"untouched for over 7 days: 1\n\s+acme:storefront#2 ")
+        self.assertRegex(out, r"waiting for a decision: 1\n\s+acme:storefront#3 ")
+        self.assertNotIn("Fresh", out)
+
+    def test_sql_reads_and_never_writes(self):
+        self.add("One")
+        code, out, _ = self.run_cli("tasks", "sql", "SELECT task, title FROM v_tasks")
+        self.assertEqual((code, out), (0, "task | title\nacme:storefront#1 | One\n"))
+        code, _, err = self.run_cli("tasks", "sql", "DELETE FROM tasks")
+        self.assertEqual(code, 2)
+        self.assertIn("readonly", err)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM tasks").fetchone()[0], 1)
+
+    def test_a_dump_recreates_the_work_list_in_an_empty_database(self):
+        key = self.add("Checkout", "--next-step", "it's measured")
+        self.run_cli("tasks", "note", key, "first note")
+        self.run_cli("tasks", "metric", key, "rows", "0", "12", "--method", "SQL count")
+        target = os.path.join(self.tmp, "backup", "worklist.sql")
+        code, out, _ = self.run_cli("tasks", "dump", "--out", target)
+        self.assertEqual(code, 0, out)
+        fresh = sqlite3.connect(os.path.join(self.tmp, "fresh.db"))
+        with open(target, encoding="utf-8") as f:
+            fresh.executescript(f.read())
+        self.assertEqual(fresh.execute("SELECT next_step FROM tasks WHERE task = ?", (key,)).fetchone()[0],
+                         "it's measured")
+        self.assertEqual(fresh.execute("SELECT count(*) FROM task_notes").fetchone()[0], 1)
+        self.assertEqual(fresh.execute("SELECT after FROM task_metrics").fetchone()[0], "12")
+        fresh.close()
+
+    def test_a_dump_can_be_committed(self):
+        self.add("One")
+        backup = os.path.join(self.tmp, "backup")
+        os.makedirs(backup)
+        subprocess.run(["git", "init", "-q", backup], check=True)
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            _, out, _ = self.run_cli("tasks", "dump", "--out", os.path.join(backup, "w.sql"), "--git")
+            self.assertIn("git: committed", out)
+            _, out, _ = self.run_cli("tasks", "dump", "--out", os.path.join(backup, "w.sql"), "--git")
+            self.assertIn("git: no changes", out)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_list_can_add_what_was_closed_lately(self):
+        self.add("Open one")
+        done = self.add("Closed lately")
+        self.run_cli("tasks", "done", done, "--outcome", "x", now=self.t0)
+        _, out, _ = self.run_cli("tasks", "list", "--project", ".", "--closed-days", "3", now=self.t0 + 86400)
+        self.assertIn("Closed lately", out)
+        _, out, _ = self.run_cli("tasks", "list", "--project", ".", "--closed-days", "3", now=self.t0 + 5 * 86400)
+        self.assertNotIn("Closed lately", out)
+        self.assertIn("Open one", out)
+
+    def test_hist_by_month_status_only_and_project(self):
+        key = self.add("One")
+        self.run_cli("tasks", "set", key, "--next-step", "y", now=self.t0)
+        self.run_cli("tasks", "set", key, "--status", "waiting", now=self.t0)
+        _, out, _ = self.run_cli("tasks", "hist", "--month", "2026-09", "--status-only", "--project", ".")
+        self.assertIn("status: open → waiting", out)
+        self.assertNotIn("next_step", out)
+        _, out, _ = self.run_cli("tasks", "hist", "--month", "2026-08")
+        self.assertEqual(out, "no changes\n")
+
+    def test_show_ends_with_the_latest_changes(self):
+        key = self.add("One")
+        self.run_cli("tasks", "set", key, "--status", "waiting", now=self.t0 + 9000)
+        _, out, _ = self.run_cli("tasks", "show", key)
+        self.assertRegex(out, r"\nchanges\n.*created: One\n.*status: open → waiting\n$")
+
     # ── storage ─────────────────────────────────────────────────────────────
 
     def test_a_version_3_database_gains_the_work_list(self):
