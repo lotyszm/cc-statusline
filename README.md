@@ -215,7 +215,8 @@ Claude Code runs a hook at every step of a session: when you send a prompt, when
 and ends, when it waits for your permission, when a reply is done. `--install` points those
 hooks at `statusline.py hook`, which writes one row per event to a local SQLite database.
 Reports are worked out from those raw events every time, so a change in the settings applies
-to past days as well.
+to past days as well. Only the work list's task time keeps what it counted for past days, and
+counts them again when the settings, the code or anything that reaches back into them changes.
 
 ### How time is counted
 
@@ -365,7 +366,7 @@ request, so it never shows stale numbers. To drive it by hand, or after `--no-da
 | Path | What it holds |
 | --- | --- |
 | `~/.config/cc-statusline/config.toml` | Rules, rates, the break and tool limits. |
-| `~/.local/share/cc-statusline/tracker.db` | The events, sessions and task assignments. |
+| `~/.local/share/cc-statusline/tracker.db` | The events, sessions and task assignments, and the work list's task time on past days. |
 | `~/.local/share/cc-statusline/status/` | One small file per session, read by the status line. |
 | `~/.local/share/cc-statusline/hook.log` | Hook errors. Hooks never fail a session; they log here. |
 

@@ -10,7 +10,8 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 5              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves
+SCHEMA_VERSION = 6              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves;
+                                # 6: kept task time
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -128,6 +129,28 @@ CREATE TABLE IF NOT EXISTS imported_files (
     path  TEXT PRIMARY KEY,
     mtime REAL NOT NULL,
     size  INTEGER NOT NULL
+);
+
+-- Counted time of tasks on days before today, so the work list does not count
+-- the whole history again on every request (tasktime.py). Derived data: losing
+-- it costs one count from the first event.
+CREATE TABLE IF NOT EXISTS task_time (
+    day        TEXT NOT NULL,          -- local date
+    task       TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    seconds    REAL NOT NULL,
+    PRIMARY KEY (day, task, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_time_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    basis       TEXT NOT NULL,         -- hash of what labels all time: config, zone, code, aliases, clients
+    through     REAL NOT NULL,         -- days before this local midnight are kept
+    cursor      INTEGER NOT NULL,      -- events up to this id were counted...
+    loaded_to   REAL NOT NULL,         -- ...and those before this time
+    assign_max  INTEGER NOT NULL,      -- assignments up to this id were counted
+    null_dirs   TEXT NOT NULL,         -- JSON list of sessions that had no project_dir then
+    computed_at REAL NOT NULL
 );
 """
 

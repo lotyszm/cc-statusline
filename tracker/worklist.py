@@ -15,7 +15,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import db, ledger
+from . import db, ledger, tasktime
 
 OPEN_STATUSES = db.OPEN_STATUSES
 CLOSED_STATUSES = ("done", "parked")
@@ -330,26 +330,25 @@ def tasks(conn, project=None, statuses=None, kind=None, area=None, priority=None
                         args).fetchall()
 
 
-def seconds_per_task(conn, cfg, start=0.0, end=None):
-    """Counted seconds per task key, as reports count them."""
+def seconds_per_task(conn, cfg, end=None):
+    """Counted seconds per task key since the first event, as reports count them."""
     out = {}
-    for (key, _day), secs in ledger.allocate(conn, cfg, start, end or time.time()).items():
-        if key.task:
-            out[key.task] = out.get(key.task, 0.0) + secs
+    for (task, _sid), secs in tasktime.seconds(conn, cfg, end).items():
+        out[task] = out.get(task, 0.0) + secs
     return out
 
 
-def time_of(conn, cfg, key, start=0.0, end=None):
-    """(counted seconds, [session rows]) of one task, as reports count them.
+def time_of(conn, cfg, key, end=None):
+    """(counted seconds, [session rows]) of one task since the first event, as reports count them.
 
     Sessions come from the counted time, not from assignments only: a branch
     named after the ticket, or an assignment to the ticket key, counts too.
     """
     secs, sids = 0.0, set()
-    for (k, _day), s in ledger.allocate(conn, cfg, start, end or time.time()).items():
-        if k.task == key:
+    for (task, sid), s in tasktime.seconds(conn, cfg, end).items():
+        if task == key:
             secs += s
-            sids.add(k.session_id)
+            sids.add(sid)
     rows = []
     ids = sorted(sids)
     for i in range(0, len(ids), 500):
