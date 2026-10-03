@@ -227,10 +227,16 @@ def cmd_tasks(args, conn, cfg, now, out):
             rows = [r for r in db.task_details(conn).values()
                     if not statuses or (r["status"] or "").lower() in [x.lower() for x in statuses]]
         rows = [r for r in rows if not args.client or r["task"].lower().startswith(args.client.lower() + ":")]
+        secs = worklist.seconds_per_task(conn, cfg) if args.time else {}
+        if args.json:
+            fields = ("task", "project", "number", "kind", "status", "priority", "title", "next_step", "ticket")
+            data = [dict({f: r[f] for f in fields}, **({"seconds": round(secs.get(r["task"], 0))} if args.time else {}))
+                    for r in sorted(rows, key=lambda r: (r["project"] or "", r["number"] or 0, r["task"]))]
+            out.write(json.dumps(data, ensure_ascii=False) + "\n")
+            return 0
         if not rows:
             print("no tasks", file=out)
             return 0
-        secs = worklist.seconds_per_task(conn, cfg) if args.time else {}
         width = max(len(r["task"]) for r in rows)
         swidth = max(len(r["status"] or "—") for r in rows)
         for r in sorted(rows, key=lambda r: (r["project"] or "", r["number"] or 0, r["task"])):
@@ -627,6 +633,7 @@ def build_parser():
     kl.add_argument("--priority")
     kl.add_argument("--time", action="store_true", help="counted time per task (reads the whole history)")
     kl.add_argument("--next", action="store_true", help="the next step under each task")
+    kl.add_argument("--json", action="store_true", help="a JSON array, for scripts and plugins")
     kw = ksub.add_parser("show", help="one task in full: what to know to pick it up again")
     ref(kw)
     kw.add_argument("--all", action="store_true", help="every note and session, not the last five")

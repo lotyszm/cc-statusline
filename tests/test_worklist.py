@@ -239,6 +239,17 @@ class WorklistTest(IsolatedTestCase):
         self.assertEqual([i["number"] for i in got["items"]], [3, 4, 2, 1])
         self.assertEqual(got["items"][1]["status"], "in-progress")
 
+    def test_list_as_json_for_scripts(self):
+        key = self.add("Checkout", "--priority", "risk", "--next-step", "measure it")
+        self.add("Rule", "--kind", "decision")
+        code, out, _ = self.run_cli("tasks", "list", "--open", "--kind", "task", "--project", ".", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [{"task": key, "project": "storefront", "number": 1, "kind": "task",
+                                            "status": "open", "priority": "risk", "title": "Checkout",
+                                            "next_step": "measure it", "ticket": None}])
+        _, out, _ = self.run_cli("tasks", "list", "--project", "nowhere", "--json")
+        self.assertEqual(json.loads(out), [])
+
     def test_outside_any_project_there_is_no_list(self):
         self.assertIsNone(status.open_tasks(self.conn, self.tmp))
         self.assertIsNone(status.open_tasks(self.conn, None))
