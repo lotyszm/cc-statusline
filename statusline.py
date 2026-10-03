@@ -64,7 +64,7 @@ SHOW_TIME = True                # show the task and today's tracked time (see Ti
                                 # tracking in the README); absent when not tracked
 SHOW_TASKS = True               # open tasks of the project to the right of the gauges,
                                 # when the terminal is wide enough (gauges layout)
-SHOW_DASHBOARD_LINK = True      # a link to the dashboard's work list above them
+SHOW_DASHBOARD_LINK = True      # "Open panel": a link to the dashboard's work list above them
 TASKS_MIN_W = 24                # narrowest task column worth drawing
 
 # 256-colour palette. Higher index means lighter in the 232-255 greyscale ramp.
@@ -110,12 +110,12 @@ LABELS = {
            "new_dir": "new directory", "no_limit": "limit n/a", "tok": "tok",
            "no_prices": "no price data", "stale": "prices {d}d old",
            "unpriced": "unpriced model", "no_task": "no task",
-           "run_install": "run --install", "todo": "todo", "none_open": "nothing open"},
+           "run_install": "run --install", "todo": "todo", "none_open": "nothing open", "open_panel": "Open panel"},
     "pl": {"session": "sesja", "project": "projekt", "total": "razem",
            "new_dir": "nowy katalog", "no_limit": "limit n/d", "tok": "tok",
            "no_prices": "brak cennika", "stale": "cennik {d}d",
            "unpriced": "model spoza cennika", "no_task": "bez zadania",
-           "run_install": "uruchom --install", "todo": "todo", "none_open": "nic otwartego"},
+           "run_install": "uruchom --install", "todo": "todo", "none_open": "nic otwartego", "open_panel": "Otwórz panel"},
 }
 
 # ══════════════════════════════ PATHS AND STATE ════════════════════════════
@@ -716,10 +716,10 @@ def task_column(open_, current, width):
     count = int(open_.get("count") or 0)
     head = lbl(L("todo")) + " " + (val(str(count)) if items else fg(C_MUTED, L("none_open")))
     if SHOW_DASHBOARD_LINK:
-        address = f"127.0.0.1:{DASHBOARD_PORT}"
-        url = f"http://{address}/tasks?project={quote(str(open_.get('project') or ''))}"
-        if vlen(head) + 5 + len(address) <= width:
-            head += f" {fg(C_SEP, chr(183))} " + fg(C_PATH, link(url, f"↗ {address}"))
+        url = f"http://127.0.0.1:{DASHBOARD_PORT}/tasks?project={quote(str(open_.get('project') or ''))}"
+        text = f"↗ {L('open_panel')}"
+        if vlen(head) + 3 + len(text) <= width:
+            head += f" {fg(C_SEP, chr(183))} " + fg(C_PATH, link(url, text))
     rows = [head]
     shown = items[:2]
     if shown:

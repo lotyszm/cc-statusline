@@ -216,7 +216,7 @@ class HintTest(StatuslineTestCase):
         self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", raw)
         lines = [l.replace("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", "").replace("\x1b]8;;\x1b\\", "")
                  for l in lines]
-        self.assertTrue(lines[1].endswith("todo 5 · ↗ 127.0.0.1:8765"), lines[1])
+        self.assertTrue(lines[1].endswith("todo 5 · ↗ Open panel"), lines[1])
         self.assertIn("#1 ▸ Task number 1", lines[2])
         self.assertIn("+3  #2 · Task number 2", lines[3])
         self.assertTrue(all(len(line) <= 148 for line in lines[1:]), [len(x) for x in lines])
@@ -229,6 +229,7 @@ class HintTest(StatuslineTestCase):
             raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
                                   "workspace": {"current_dir": self.tmp}, "context_window": {}})
         self.assertNotIn("8765", raw)
+        self.assertNotIn("Open panel", raw)
         self.assertTrue(ANSI.sub("", raw).split("\n")[1].endswith("todo 5"))
 
     def test_a_narrow_or_unknown_terminal_leaves_the_tasks_out(self):
