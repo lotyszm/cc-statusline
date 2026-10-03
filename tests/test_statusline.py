@@ -210,12 +210,26 @@ class HintTest(StatuslineTestCase):
     def test_a_wide_terminal_shows_the_open_tasks_beside_the_gauges(self):
         self.write_open()
         with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
-            lines = self.render().split("\n")
-        self.assertIn("todo 5 #1 ▸ Task number 1", lines[1])
-        self.assertIn("#2 · Task number 2", lines[2])
-        self.assertIn("+2", lines[3])
+            raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
+                                  "workspace": {"current_dir": self.tmp}, "context_window": {}})
+        lines = ANSI.sub("", raw).split("\n")
+        self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", raw)
+        lines = [l.replace("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", "").replace("\x1b]8;;\x1b\\", "")
+                 for l in lines]
+        self.assertTrue(lines[1].endswith("todo 5 · ↗ 127.0.0.1:8765"), lines[1])
+        self.assertIn("#1 ▸ Task number 1", lines[2])
+        self.assertIn("+3  #2 · Task number 2", lines[3])
         self.assertTrue(all(len(line) <= 148 for line in lines[1:]), [len(x) for x in lines])
-        self.assertTrue(lines[1].endswith("…"))
+        self.assertTrue(lines[2].endswith("…"))
+
+    def test_the_link_is_left_out_when_turned_off(self):
+        self.write_open()
+        with mock.patch.dict(os.environ, {"COLUMNS": "150"}), \
+                mock.patch.object(self.sl, "SHOW_DASHBOARD_LINK", False):
+            raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
+                                  "workspace": {"current_dir": self.tmp}, "context_window": {}})
+        self.assertNotIn("8765", raw)
+        self.assertTrue(ANSI.sub("", raw).split("\n")[1].endswith("todo 5"))
 
     def test_a_narrow_or_unknown_terminal_leaves_the_tasks_out(self):
         self.write_open()
@@ -241,7 +255,7 @@ class HintTest(StatuslineTestCase):
         with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
             raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
                                   "workspace": {"current_dir": self.tmp}, "context_window": {}})
-        task_part = raw.split("\n")[1].split("#1", 1)[1]
+        task_part = raw.split("\n")[2].split("#1", 1)[1]
         self.assertNotRegex(ANSI.sub("", task_part), r"[\x00-\x1f\x7f-\x9f]")
 
     def test_a_project_with_nothing_open_says_so(self):

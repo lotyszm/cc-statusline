@@ -427,7 +427,8 @@ tracking in `config.toml` (see [Clients and tasks](#clients-and-tasks)).
 | `BAR_STYLE` | `"solid"` | `"solid"` paints the bar with a background colour, which stays opaque on a transparent terminal. `"ascii"` draws `█` characters instead. |
 | `SHOW_GIT` | `True` | The branch is read straight from `.git/HEAD`; no `git` process is started. |
 | `SHOW_TIME` | `True` | The `⏱` segment. It reads one small file per session and never the database. |
-| `SHOW_TASKS` | `True` | Open tasks of the session's project to the right of the gauges: risk first, then in progress, then by priority; the current task in the time colour, `+N` for the rest. Drawn only when they fit, at least `TASKS_MIN_W` (24) columns. The hooks put the list in the session's file, so this never touches the database either. The width comes from `COLUMNS`, then the terminal; if Claude Code shows neither, set `CC_STATUSLINE_COLUMNS` in the `env` block of `settings.json`. |
+| `SHOW_TASKS` | `True` | Open tasks of the session's project to the right of the gauges, the two most pressing under a count: risk first, then in progress, then by priority; the current task in the time colour, `+N` for the rest. Drawn only when they fit, at least `TASKS_MIN_W` (24) columns. The hooks put the list in the session's file, so this never touches the database either. The width comes from `COLUMNS`, then the terminal; if Claude Code shows neither, set `CC_STATUSLINE_COLUMNS` in the `env` block of `settings.json`. |
+| `SHOW_DASHBOARD_LINK` | `True` | Above those tasks, `↗ 127.0.0.1:8765`: a link (OSC 8) to the dashboard's work list for the project. The text is the address, so a terminal without OSC 8 can still pick it up as a URL. |
 | `C_*`, `BAR_*` | — | 256-colour numbers. Preview the grey ramp with `for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done` |
 
 `PRICES_TTL`, `PRICES_WARN_AFTER`, `REFRESH_LOCK_TTL` and `RECENT_DAYS` sit just below the

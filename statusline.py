@@ -48,6 +48,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 # ══════════════════════════════ CONFIGURATION ══════════════════════════════
 
@@ -63,6 +64,7 @@ SHOW_TIME = True                # show the task and today's tracked time (see Ti
                                 # tracking in the README); absent when not tracked
 SHOW_TASKS = True               # open tasks of the project to the right of the gauges,
                                 # when the terminal is wide enough (gauges layout)
+SHOW_DASHBOARD_LINK = True      # a link to the dashboard's work list above them
 TASKS_MIN_W = 24                # narrowest task column worth drawing
 
 # 256-colour palette. Higher index means lighter in the 232-255 greyscale ramp.
@@ -588,7 +590,8 @@ def hooks_wired(account_dir):
 # ══════════════════════════════ FORMATTING ═════════════════════════════════
 
 R, B = "\033[0m", "\033[1m"
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Colours, and OSC 8 hyperlinks (ESC ] 8 ; ; URL ESC \), neither of which takes a column.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b\x07]*(?:\x1b\\|\x07)")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
@@ -702,34 +705,39 @@ def terminal_width():
     return number("CC_STATUSLINE_COLUMNS")
 
 
+def link(url, text):
+    """Text that opens `url` when clicked, in terminals that know OSC 8; plain text elsewhere."""
+    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+
+
 def task_column(open_, current, width):
-    """Three rows listing the project's open tasks, each at most `width` wide."""
+    """Three rows: the count with a link to the dashboard, then the most pressing open tasks."""
     items = open_.get("items") or []
     count = int(open_.get("count") or 0)
-    head = f"{L('todo')} {count}"
-    lw = len(head) + 1
-    rows = []
-    if not items:
-        return [lbl(L("todo")) + " " + fg(C_MUTED, L("none_open")), "", ""]
-    nw = max(len(f"#{it.get('number')}") for it in items[:3])
-    marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
-    for i, it in enumerate(items[:3]):
-        if i == 0:
-            prefix = lbl(L("todo")) + " " + val(str(count)) + " "
-        elif i == 2 and count > 3:
-            prefix = pad(fg(C_MUTED, f"+{count - 3}"), lw)
-        else:
-            prefix = " " * lw
-        mark, mc = marks.get(it.get("status"), ("·", C_SEP))
-        num = f"#{it.get('number')}"
-        num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
-        room = width - lw - nw - 3
-        # A title is user data: control characters (ESC and the like) never reach the terminal.
-        title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
-        if len(title) > room:
-            title = title[:max(0, room - 1)] + "…"
-        title = fg(C_TASK, title) if it.get("task") == current else val(title)
-        rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
+    head = lbl(L("todo")) + " " + (val(str(count)) if items else fg(C_MUTED, L("none_open")))
+    if SHOW_DASHBOARD_LINK:
+        address = f"127.0.0.1:{DASHBOARD_PORT}"
+        url = f"http://{address}/tasks?project={quote(str(open_.get('project') or ''))}"
+        if vlen(head) + 5 + len(address) <= width:
+            head += f" {fg(C_SEP, chr(183))} " + fg(C_PATH, link(url, f"↗ {address}"))
+    rows = [head]
+    shown = items[:2]
+    if shown:
+        lw = 4
+        nw = max(len(f"#{it.get('number')}") for it in shown)
+        marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
+        for i, it in enumerate(shown):
+            prefix = pad(fg(C_MUTED, f"+{count - 2}"), lw) if i == 1 and count > 2 else " " * lw
+            mark, mc = marks.get(it.get("status"), ("·", C_SEP))
+            num = f"#{it.get('number')}"
+            num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
+            room = width - lw - nw - 3
+            # A title is user data: control characters (ESC and the like) never reach the terminal.
+            title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
+            if len(title) > room:
+                title = title[:max(0, room - 1)] + "…"
+            title = fg(C_TASK, title) if it.get("task") == current else val(title)
+            rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
     return rows + [""] * (3 - len(rows))
 
 
