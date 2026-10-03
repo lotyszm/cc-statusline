@@ -213,8 +213,8 @@ class HintTest(StatuslineTestCase):
             raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
                                   "workspace": {"current_dir": self.tmp}, "context_window": {}})
         lines = ANSI.sub("", raw).split("\n")
-        self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", raw)
-        lines = [l.replace("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x1b\\", "").replace("\x1b]8;;\x1b\\", "")
+        self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x07", raw)
+        lines = [l.replace("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x07", "").replace("\x1b]8;;\x07", "")
                  for l in lines]
         self.assertTrue(lines[1].endswith("todo 5 · ↗ Open panel"), lines[1])
         self.assertIn("#1 ▸ Task number 1", lines[2])

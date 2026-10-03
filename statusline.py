@@ -707,7 +707,8 @@ def terminal_width():
 
 def link(url, text):
     """Text that opens `url` when clicked, in terminals that know OSC 8; plain text elsewhere."""
-    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+    # BEL ends the sequence, as in Claude Code's own status line examples.
+    return f"\x1b]8;;{url}\x07{text}\x1b]8;;\x07"
 
 
 def task_column(open_, current, width):
