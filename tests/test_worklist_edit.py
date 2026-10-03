@@ -104,3 +104,35 @@ class MoveTest(EditTestCase):
         with self.assertRaises(LookupError):
             worklist.move(self.conn, "own:statusline#99", "storefront")
         self.assertIsNotNone(db.task_details(self.conn, self.key))
+
+
+class ClientChangeTest(EditTestCase):
+    """A project given to another client takes its tasks, their keys and time along."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = worklist.add(self.conn, self.own, "Pricing export", now=self.t0, ticket="SHOP-7")
+        self.other = worklist.add(self.conn, self.own, "Ship it", now=self.t0, depends_on=f'["{self.key}"]')
+        worklist.note(self.conn, self.key, "started", now=self.t0)
+        self.busy("s1", 0, 1200, cwd=OWN)
+        db.add_assignment(self.conn, "s1", self.key, self.t0, "cli")
+
+    def test_the_tasks_get_keys_of_the_new_client(self):
+        worklist.set_project(self.conn, "statusline", client="acme", now=self.t0 + 7200, author="cli")
+        self.assertIsNone(db.task_details(self.conn, self.key))
+        r = db.task_details(self.conn, "acme:statusline#1")
+        self.assertEqual((r["project"], r["number"], r["title"]), ("statusline", 1, "Pricing export"))
+        self.assertEqual([n["text"] for n in worklist.notes(self.conn, "acme:statusline#1")], ["started"])
+        self.assertEqual(worklist.items(db.task_details(self.conn, "acme:statusline#2")["depends_on"]),
+                         ["acme:statusline#1"])
+        self.assertEqual(worklist.resolve(self.conn, self.key), "acme:statusline#1")
+
+    def test_the_time_goes_to_the_new_client(self):
+        self.assertEqual(self.totals(by=("client", "task")), {("own", self.key): 1200})
+        worklist.set_project(self.conn, "statusline", client="acme")
+        self.assertEqual(self.totals(by=("client", "billable", "task")), {("acme", True, "acme:statusline#1"): 1200})
+
+    def test_other_fields_leave_the_keys_alone(self):
+        worklist.set_project(self.conn, "statusline", client="own", ticket_url="https://t/")
+        self.assertIsNotNone(db.task_details(self.conn, self.key))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM task_moves").fetchone()[0], 0)

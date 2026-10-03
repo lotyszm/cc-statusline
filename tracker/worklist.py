@@ -94,12 +94,31 @@ def project(conn, slug):
     return conn.execute("SELECT * FROM projects WHERE slug = ?", (slug,)).fetchone()
 
 
-def set_project(conn, slug, **fields):
+def set_project(conn, slug, now=None, author=None, **fields):
+    """Change a project's fields. A new client renames its tasks' keys to match
+    ('own:cms#4' -> 'acme:cms#4'), so their time goes to that client too."""
     allowed = {"client", "remote", "path", "ticket_url", "repo_url"}
     given = {k: v for k, v in fields.items() if v is not None and k in allowed}
-    if given:
+    if not given:
+        return
+    before = project(conn, slug)
+    now = now or time.time()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
         conn.execute(f"UPDATE projects SET {', '.join(f'{k} = ?' for k in given)} WHERE slug = ?",
                      [*given.values(), slug])
+        after = project(conn, slug)
+        if before is not None and after["client"] != before["client"]:
+            for r in conn.execute("SELECT task, number FROM tasks WHERE project = ? AND number IS NOT NULL",
+                                  (slug,)).fetchall():
+                new = key_for(after, r["number"])
+                if new != r["task"]:
+                    conn.execute("UPDATE tasks SET task = ?, updated_at = ? WHERE task = ?", (new, now, r["task"]))
+                    _rekey(conn, r["task"], new, now, author)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def key_for(proj, number):
@@ -271,21 +290,27 @@ def move(conn, key, slug, now=None, author=None):
             raise ValueError(f"{new} already exists")
         conn.execute("UPDATE tasks SET task = ?, project = ?, number = ?, updated_at = ? WHERE task = ?",
                      (new, slug, number, now, key))
-        for table in KEYED_TABLES:
-            conn.execute(f"UPDATE {table} SET task = ? WHERE task = ?", (new, key))
-        for other in conn.execute("SELECT task, depends_on FROM tasks WHERE depends_on LIKE ?",
-                                  (f"%{key}%",)).fetchall():
-            deps = [new if d == key else d for d in items(other["depends_on"])]
-            conn.execute("UPDATE tasks SET depends_on = ? WHERE task = ?",
-                         (json.dumps(deps, ensure_ascii=False), other["task"]))
-        conn.execute("UPDATE task_moves SET new_task = ? WHERE new_task = ?", (new, key))
-        conn.execute("INSERT OR REPLACE INTO task_moves (old_task, new_task, ts) VALUES (?, ?, ?)", (key, new, now))
-        _history(conn, new, "moved", key, new, now, author)
+        _rekey(conn, key, new, now, author)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
     return new
+
+
+def _rekey(conn, key, new, now, author):
+    """What hangs on a task key follows it to `new`; the old key keeps resolving.
+    The tasks row itself is the caller's to rename."""
+    for table in KEYED_TABLES:
+        conn.execute(f"UPDATE {table} SET task = ? WHERE task = ?", (new, key))
+    for other in conn.execute("SELECT task, depends_on FROM tasks WHERE depends_on LIKE ?",
+                              (f"%{key}%",)).fetchall():
+        deps = [new if d == key else d for d in items(other["depends_on"])]
+        conn.execute("UPDATE tasks SET depends_on = ? WHERE task = ?",
+                     (json.dumps(deps, ensure_ascii=False), other["task"]))
+    conn.execute("UPDATE task_moves SET new_task = ? WHERE new_task = ?", (new, key))
+    conn.execute("INSERT OR REPLACE INTO task_moves (old_task, new_task, ts) VALUES (?, ?, ?)", (key, new, now))
+    _history(conn, new, "moved", key, new, now, author)
 
 
 def assign_session(conn, cfg, session_id, key, now=None, since=None):

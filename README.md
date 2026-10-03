@@ -327,7 +327,9 @@ cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreate
 - `show` is a resume package: next step, criteria, description, evidence, plan,
   pitfalls, metrics, the last notes, counted time and the sessions behind it.
 - `projects` lists projects; `project SLUG --ticket-url 'https://jira/browse/{ticket}'`
-  turns tickets into links. The `v_tasks` view is there for ad-hoc SQL.
+  turns tickets into links, and `--client NAME` hands the project to another client: its
+  tasks' keys change to match (`own:cms#4` → `acme:cms#4`), the old keys keep working, and
+  their time goes to the new client. The `v_tasks` view is there for ad-hoc SQL.
 
 ### Commands
 

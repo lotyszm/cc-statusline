@@ -277,7 +277,7 @@ def cmd_tasks(args, conn, cfg, now, out):
                 args.client = cfg.classify(args.path)[0]
         worklist.set_project(conn, args.slug, client=args.client, remote=args.remote,
                              path=str(Path(args.path).expanduser().resolve()) if args.path else None,
-                             ticket_url=args.ticket_url, repo_url=args.repo_url)
+                             ticket_url=args.ticket_url, repo_url=args.repo_url, now=now, author=_author(args))
         print(f"project {args.slug} saved", file=out)
         return 0
 
