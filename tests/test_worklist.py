@@ -7,7 +7,7 @@ import os
 import sqlite3
 import subprocess
 
-from tracker import cli, config, db, hook, ledger, worklist
+from tracker import cli, config, db, hook, ledger, status, worklist
 from tests.helpers import IsolatedTestCase, local_ts
 
 
@@ -223,6 +223,25 @@ class WorklistTest(IsolatedTestCase):
         self.busy("s1abcdef")
         db.add_assignment(self.conn, "s1abcdef", key, self.t0, "cli")
         self.assertIsNone(hook._prompt_context(self.conn, self.cfg, "s1abcdef", "about SHOP-42", self.t0 + 700))
+
+    def test_the_status_file_lists_the_open_tasks_most_pressing_first(self):
+        self.add("Plain", "--priority", "low")                              # 1
+        self.add("Medium", "--priority", "medium")                          # 2
+        self.add("Risky", "--priority", "risk")                             # 3
+        started = self.add("Started")                                       # 4
+        self.run_cli("tasks", "start", started, "--session", "s1abcdef")
+        self.add("Rule", "--kind", "decision")                              # 5
+        finished = self.add("Finished")                                     # 6
+        self.run_cli("tasks", "done", finished, "--outcome", "shipped")
+        self.busy("s1abcdef")
+        got = status.write(self.conn, self.cfg, "s1abcdef", self.t0 + 700)["open"]
+        self.assertEqual((got["project"], got["count"]), ("storefront", 4))
+        self.assertEqual([i["number"] for i in got["items"]], [3, 4, 2, 1])
+        self.assertEqual(got["items"][1]["status"], "in-progress")
+
+    def test_outside_any_project_there_is_no_list(self):
+        self.assertIsNone(status.open_tasks(self.conn, self.tmp))
+        self.assertIsNone(status.open_tasks(self.conn, None))
 
     # ── storage ─────────────────────────────────────────────────────────────
 

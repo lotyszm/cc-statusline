@@ -61,6 +61,9 @@ BAR_STYLE = "solid"             # "solid": bars drawn with background colour, wh
 SHOW_GIT = True                 # show branch, read straight from .git/HEAD
 SHOW_TIME = True                # show the task and today's tracked time (see Time
                                 # tracking in the README); absent when not tracked
+SHOW_TASKS = True               # open tasks of the project to the right of the gauges,
+                                # when the terminal is wide enough (gauges layout)
+TASKS_MIN_W = 24                # narrowest task column worth drawing
 
 # 256-colour palette. Higher index means lighter in the 232-255 greyscale ramp.
 # Preview:  for i in $(seq 232 255); do printf "\033[48;5;${i}m %3d \033[0m" $i; done
@@ -105,12 +108,12 @@ LABELS = {
            "new_dir": "new directory", "no_limit": "limit n/a", "tok": "tok",
            "no_prices": "no price data", "stale": "prices {d}d old",
            "unpriced": "unpriced model", "no_task": "no task",
-           "run_install": "run --install"},
+           "run_install": "run --install", "todo": "todo", "none_open": "nothing open"},
     "pl": {"session": "sesja", "project": "projekt", "total": "razem",
            "new_dir": "nowy katalog", "no_limit": "limit n/d", "tok": "tok",
            "no_prices": "brak cennika", "stale": "cennik {d}d",
            "unpriced": "model spoza cennika", "no_task": "bez zadania",
-           "run_install": "uruchom --install"},
+           "run_install": "uruchom --install", "todo": "todo", "none_open": "nic otwartego"},
 }
 
 # ══════════════════════════════ PATHS AND STATE ════════════════════════════
@@ -670,6 +673,64 @@ def short_path(p):
     return "/".join(parts[-2:]) if len(parts) > 3 else s
 
 
+def terminal_width():
+    """Columns of the terminal, or 0 when unknown.
+
+    COLUMNS first, then the controlling terminal, then CC_STATUSLINE_COLUMNS,
+    which can be set in the `env` block of settings.json when neither is seen.
+    """
+    def number(name):
+        try:
+            return int(os.environ.get(name) or 0)
+        except ValueError:
+            return 0
+    cols = number("COLUMNS")
+    if cols:
+        return cols
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        fd = None
+    if fd is not None:
+        try:
+            return os.get_terminal_size(fd).columns
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return number("CC_STATUSLINE_COLUMNS")
+
+
+def task_column(open_, current, width):
+    """Three rows listing the project's open tasks, each at most `width` wide."""
+    items = open_.get("items") or []
+    count = int(open_.get("count") or 0)
+    head = f"{L('todo')} {count}"
+    lw = len(head) + 1
+    rows = []
+    if not items:
+        return [lbl(L("todo")) + " " + fg(C_MUTED, L("none_open")), "", ""]
+    nw = max(len(f"#{it.get('number')}") for it in items[:3])
+    marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
+    for i, it in enumerate(items[:3]):
+        if i == 0:
+            prefix = lbl(L("todo")) + " " + val(str(count)) + " "
+        elif i == 2 and count > 3:
+            prefix = pad(fg(C_MUTED, f"+{count - 3}"), lw)
+        else:
+            prefix = " " * lw
+        mark, mc = marks.get(it.get("status"), ("·", C_SEP))
+        num = f"#{it.get('number')}"
+        num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
+        room = width - lw - nw - 3
+        title = str(it.get("title") or "")
+        if len(title) > room:
+            title = title[:max(0, room - 1)] + "…"
+        title = fg(C_TASK, title) if it.get("task") == current else val(title)
+        rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
+    return rows + [""] * (3 - len(rows))
+
+
 # ══════════════════════════════ RENDER ═════════════════════════════════════
 
 def render(data):
@@ -818,6 +879,16 @@ def render(data):
             pair(L("project"), pcost, ptoks),
         ]))
 
+    open_ = st.get("open") if st else None
+    if SHOW_TASKS and isinstance(open_, dict):
+        tw = terminal_width()
+        x = max(vlen(r) for r in out[1:4]) + 3
+        # Claude Code pads the line by one column on each side.
+        room = tw - x - 2
+        if room >= TASKS_MIN_W:
+            for i, cell in enumerate(task_column(open_, st.get("task"), room), start=1):
+                if cell:
+                    out[i] = pad(out[i], x - 3) + sep + cell
     return "\n".join(out)
 
 

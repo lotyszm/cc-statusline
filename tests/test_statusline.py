@@ -197,6 +197,46 @@ class HintTest(StatuslineTestCase):
         self.assertIn("⏱ 12345 1h 2m", line)
         self.assertNotIn("run --install", line)
 
+    def write_open(self, count=5):
+        status = paths.status_dir()
+        status.mkdir(parents=True, exist_ok=True)
+        items = [{"task": f"acme:shop#{n}", "number": n, "title": f"Task number {n} " + "x" * 80,
+                  "status": "in-progress" if n == 1 else "open", "priority": "risk" if n == 2 else "medium"}
+                 for n in range(1, count + 1)]
+        (status / "sess-1.json").write_text(json.dumps({
+            "seconds": 60, "task": "acme:shop#1", "billable": True, "day": datetime.now().strftime("%Y-%m-%d"),
+            "open": {"project": "shop", "count": count, "items": items}}))
+
+    def test_a_wide_terminal_shows_the_open_tasks_beside_the_gauges(self):
+        self.write_open()
+        with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
+            lines = self.render().split("\n")
+        self.assertIn("todo 5 #1 ▸ Task number 1", lines[1])
+        self.assertIn("#2 · Task number 2", lines[2])
+        self.assertIn("+2", lines[3])
+        self.assertTrue(all(len(line) <= 148 for line in lines[1:]), [len(x) for x in lines])
+        self.assertTrue(lines[1].endswith("…"))
+
+    def test_a_narrow_or_unknown_terminal_leaves_the_tasks_out(self):
+        self.write_open()
+        for width in (80, 0):
+            with mock.patch.object(self.sl, "terminal_width", return_value=width):
+                self.assertNotIn("todo", self.render())
+
+    def test_the_width_comes_from_columns_then_from_the_terminal(self):
+        with mock.patch.dict(os.environ, {"COLUMNS": "123"}):
+            self.assertEqual(self.sl.terminal_width(), 123)
+        with mock.patch.dict(os.environ, {"COLUMNS": "", "CC_STATUSLINE_COLUMNS": ""}), \
+                mock.patch.object(self.sl.os, "open", side_effect=OSError):
+            self.assertEqual(self.sl.terminal_width(), 0)
+            os.environ["CC_STATUSLINE_COLUMNS"] = "180"
+            self.assertEqual(self.sl.terminal_width(), 180)
+
+    def test_a_project_with_nothing_open_says_so(self):
+        self.write_open(count=0)
+        with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
+            self.assertIn("todo nothing open", self.render())
+
     def test_odd_session_ids_stay_inside_the_status_directory(self):
         outside = paths.data_dir() / "x.json"
         outside.parent.mkdir(parents=True)
