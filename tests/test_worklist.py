@@ -254,6 +254,58 @@ class WorklistTest(IsolatedTestCase):
         db.add_assignment(self.conn, "s1abcdef", key, self.t0, "cli")
         self.assertIsNone(hook._prompt_context(self.conn, self.cfg, "s1abcdef", "about SHOP-42", self.t0 + 700))
 
+    def prompt(self, cwd=None, text="popraw zaokrąglanie"):
+        out = hook.handle({"session_id": "s1abcdef", "hook_event_name": "UserPromptSubmit",
+                           "cwd": cwd or self.repo, "prompt": text}, self.conn, self.cfg, self.t0 + 700, {})
+        return out["hookSpecificOutput"]["additionalContext"] if out else None
+
+    def test_a_prompt_without_a_task_in_progress_is_reminded_to_take_or_add_one(self):
+        self.add("Checkout")
+        self.busy("s1abcdef")
+        text = self.prompt()
+        self.assertIn("tasks list --open --project .", text)
+        self.assertIn("tasks add", text)
+
+    def test_a_prompt_during_a_task_is_reminded_to_keep_it_and_close_it(self):
+        key = self.add("Checkout")
+        self.busy("s1abcdef")
+        self.run_cli("tasks", "start", "1", "--session", "s1abcdef")
+        text = self.prompt()
+        self.assertIn(f"{key} (Checkout)", text)
+        self.assertIn(f"tasks done {key} --outcome", text)
+        self.assertNotIn("tasks add", text)
+
+    def test_a_closed_task_is_no_task_in_progress(self):
+        self.add("Checkout")
+        self.busy("s1abcdef")
+        self.run_cli("tasks", "start", "1", "--session", "s1abcdef")
+        self.run_cli("tasks", "done", "1", "--outcome", "shipped")
+        self.assertIn("tasks add", self.prompt())
+
+    def test_no_reminder_without_a_work_list(self):
+        self.busy("s1abcdef")
+        self.assertIsNone(self.prompt())
+
+    def test_no_reminder_outside_a_repository(self):
+        self.add("Checkout")
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        self.assertIsNone(self.prompt(cwd=elsewhere))
+
+    def test_remind_false_turns_the_reminder_off(self):
+        self.add("Checkout")
+        self.busy("s1abcdef")
+        self.write_config(f'[[rule]]\npath = "{self.tmp}/clients/{{client}}/**"\n\n[tasks]\nremind = false\n')
+        self.cfg = config.load()
+        self.assertIsNone(self.prompt())
+
+    def test_the_reminder_follows_the_question_about_a_task_id(self):
+        self.add("Checkout")
+        self.busy("s1abcdef")
+        text = self.prompt(text="teraz SHOP-42")
+        self.assertIn("SHOP-42", text)
+        self.assertIn("tasks add", text)
+
     def test_the_status_file_lists_the_open_tasks_most_pressing_first(self):
         self.add("Plain", "--priority", "low")                              # 1
         self.add("Medium", "--priority", "medium")                          # 2

@@ -52,6 +52,7 @@ currency = "PLN"
 # ignore = ["CR"]
 # namespace = true      # keys become "client:ID" (acme:PROJ-12, globex:48302), so two
 #                       # clients' trackers can use the same numbers without mixing
+# remind = false        # no work-list reminder for the agent with each prompt
 """
 
 
@@ -102,6 +103,7 @@ class Config:
         self.prompt_patterns = tasks._compiled(t.get("prompt_patterns", tasks.PROMPT_PATTERNS))
         self.ignore = frozenset(k.upper() for k in t.get("ignore", ()))
         self.namespace = bool(t.get("namespace", False))
+        self.remind = bool(t.get("remind", True))
         self.rates = {name: c["rate"] for name, c in data.get("clients", {}).items()
                       if isinstance(c, dict) and "rate" in c}
         # Clients a task key may name ("own:claude#9"): those a rule names

@@ -324,6 +324,10 @@ cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreate
 - **The agent is told.** At session start the hook adds the current task's status,
   next step and criteria to the context, and points at `tasks list --open --project .`
   once a work list exists. A prompt naming the current task's ticket asks nothing.
+  With each prompt in a repository it adds one line: with no task in progress, to take
+  an open one or add one before changing anything; during one, to keep its next step
+  current and close it with `done` once verified. `remind = false` under `[tasks]`
+  turns that line off.
 - `show` is a resume package: next step, criteria, description, evidence, plan,
   pitfalls, metrics, the last notes, counted time and the sessions behind it.
 - `projects` lists projects; `project SLUG --ticket-url 'https://jira/browse/{ticket}'`

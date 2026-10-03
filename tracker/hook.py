@@ -112,6 +112,10 @@ def _task_brief(conn, task):
     return "\n".join(lines) + "\n"
 
 
+def _has_worklist(conn):
+    return conn.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None
+
+
 def _worklist_hint(cli):
     return (f"Work list: `{cli} tasks list --open --project .` shows this repo's open tasks, "
             f"`{cli} tasks show <TASK>` one in full; `tasks start|note|set|done` keep it current "
@@ -133,7 +137,7 @@ def _session_context(info, session_id, brief="", worklist=False):
         "reply, whether to log this session's time to it. A direct statement from the user counts "
         "as confirmation. After confirmation run:\n"
         f"  {cli_command()} task set <TASK-ID> --session {session_id} --title \"<short task title>\"\n"
-        "Do not bring up tasks otherwise, and never ask twice about the same task in one session."
+        "Do not ask which task to log time to otherwise, and never ask twice about the same task in one session."
     )
 
 
@@ -167,6 +171,24 @@ def _prompt_context(conn, cfg, session_id, prompt, now):
     )
 
 
+def _reminder(conn, cfg, session_id, now):
+    """A line on the work list with each prompt, so the agent keeps it without being told."""
+    if not cfg.remind or not _has_worklist(conn):
+        return None
+    cli = cli_command()
+    cur = ledger.current(conn, cfg, session_id, now)
+    row = db.task_details(conn, cur.task) if cur and cur.task else None
+    if row is not None and row["number"] is not None and row["status"] in db.OPEN_STATUSES:
+        title = f" ({_first_line(row['title'])})" if row["title"] else ""
+        state = "" if row["status"] == "in-progress" else f", {row['status']}"
+        return (f"cc-statusline work list: this session works on {cur.task}{title}{state}. Keep its next "
+                f"step current and close it with `{cli} tasks done {cur.task} --outcome \"...\"` once "
+                "verified; a different goal gets its own task.")
+    return ("cc-statusline work list: no task is in progress in this session. Before changing anything, "
+            f"take an open one (`{cli} tasks list --open --project .`, then `tasks start N`) or `tasks add` "
+            "one; questions alone need none.")
+
+
 def handle(payload, conn, cfg, now, env):
     """Record one hook event; return the JSON to print, or None."""
     session_id = payload.get("session_id")
@@ -197,15 +219,16 @@ def handle(payload, conn, cfg, now, env):
             return _output(event, f"cc-statusline: current task {info['task']}"
                                   f"{' (' + info['title'] + ')' if info.get('title') else ''}.\n{brief}"
                                   + _worklist_hint(cli_command())) if brief else None
-        has_list = conn.execute("SELECT 1 FROM projects LIMIT 1").fetchone() is not None
-        return _output(event, _session_context(info, session_id, brief, has_list))
+        return _output(event, _session_context(info, session_id, brief, _has_worklist(conn)))
 
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt") or ""
         title = _first_line(prompt)
         if title and not title.startswith(("/", "<")):
             db.set_session_title(conn, session_id, title, only_if_empty=True)
-        return _output(event, _prompt_context(conn, cfg, session_id, prompt, now))
+        ask = _prompt_context(conn, cfg, session_id, prompt, now)
+        remind = _reminder(conn, cfg, session_id, now) if root else None
+        return _output(event, "\n".join(filter(None, (ask, remind))))
 
     if event in ("Stop", "StopFailure"):
         title = _ai_title(payload.get("transcript_path"))
