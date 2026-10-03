@@ -207,30 +207,38 @@ class HintTest(StatuslineTestCase):
             "seconds": 60, "task": "acme:shop#1", "billable": True, "day": datetime.now().strftime("%Y-%m-%d"),
             "open": {"project": "shop", "count": count, "items": items}}))
 
-    def test_a_wide_terminal_shows_the_open_tasks_beside_the_gauges(self):
-        self.write_open()
-        with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
+    def rendered(self, columns):
+        with mock.patch.dict(os.environ, {"COLUMNS": str(columns)}):
             raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
                                   "workspace": {"current_dir": self.tmp}, "context_window": {}})
-        lines = ANSI.sub("", raw).split("\n")
-        self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x07", raw)
-        lines = [l.replace("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x07", "").replace("\x1b]8;;\x07", "")
-                 for l in lines]
+        return raw, self.sl.ANSI_RE.sub("", raw).split("\n")
+
+    def test_a_wide_terminal_shows_the_open_tasks_beside_the_gauges(self):
+        self.write_open()
+        raw, lines = self.rendered(150)
+        self.assertIn("\x1b]8;;http://127.0.0.1:8765/tasks?project=shop\x07↗ Open panel\x1b]8;;\x07", raw)
+        self.assertTrue(lines[0].endswith("todo 5 · ↗ Open panel"), lines[0])
+        self.assertIn("#1 ▸ Task number 1", lines[1])
+        self.assertIn("#2 · Task number 2", lines[2])
+        self.assertIn("+2  #3 · Task number 3", lines[3])
+        self.assertTrue(all(len(line) <= 148 for line in lines), [len(x) for x in lines])
+        self.assertTrue(lines[1].endswith("…"))
+
+    def test_when_the_first_line_has_no_room_the_link_heads_the_column(self):
+        self.write_open()
+        _, lines = self.rendered(100)
+        self.assertNotIn("Open panel", lines[0])
         self.assertTrue(lines[1].endswith("todo 5 · ↗ Open panel"), lines[1])
         self.assertIn("#1 ▸ Task number 1", lines[2])
         self.assertIn("+3  #2 · Task number 2", lines[3])
-        self.assertTrue(all(len(line) <= 148 for line in lines[1:]), [len(x) for x in lines])
-        self.assertTrue(lines[2].endswith("…"))
 
     def test_the_link_is_left_out_when_turned_off(self):
         self.write_open()
-        with mock.patch.dict(os.environ, {"COLUMNS": "150"}), \
-                mock.patch.object(self.sl, "SHOW_DASHBOARD_LINK", False):
-            raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
-                                  "workspace": {"current_dir": self.tmp}, "context_window": {}})
+        with mock.patch.object(self.sl, "SHOW_DASHBOARD_LINK", False):
+            raw, lines = self.rendered(150)
         self.assertNotIn("8765", raw)
         self.assertNotIn("Open panel", raw)
-        self.assertTrue(ANSI.sub("", raw).split("\n")[1].endswith("todo 5"))
+        self.assertTrue(lines[0].endswith("todo 5"), lines[0])
 
     def test_a_narrow_or_unknown_terminal_leaves_the_tasks_out(self):
         self.write_open()
@@ -256,7 +264,7 @@ class HintTest(StatuslineTestCase):
         with mock.patch.dict(os.environ, {"COLUMNS": "150"}):
             raw = self.sl.render({"session_id": "sess-1", "model": {"display_name": "Opus"},
                                   "workspace": {"current_dir": self.tmp}, "context_window": {}})
-        task_part = raw.split("\n")[2].split("#1", 1)[1]
+        task_part = raw.split("\n")[1].split("#1", 1)[1]
         self.assertNotRegex(ANSI.sub("", task_part), r"[\x00-\x1f\x7f-\x9f]")
 
     def test_a_project_with_nothing_open_says_so(self):

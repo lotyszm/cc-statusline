@@ -711,35 +711,41 @@ def link(url, text):
     return f"\x1b]8;;{url}\x07{text}\x1b]8;;\x07"
 
 
-def task_column(open_, current, width):
-    """Three rows: the count with a link to the dashboard, then the most pressing open tasks."""
-    items = open_.get("items") or []
+def task_head(open_, width):
+    """The count of open tasks and, room permitting, a link to the dashboard's work list."""
     count = int(open_.get("count") or 0)
-    head = lbl(L("todo")) + " " + (val(str(count)) if items else fg(C_MUTED, L("none_open")))
+    head = lbl(L("todo")) + " " + (val(str(count)) if open_.get("items") else fg(C_MUTED, L("none_open")))
     if SHOW_DASHBOARD_LINK:
         url = f"http://127.0.0.1:{DASHBOARD_PORT}/tasks?project={quote(str(open_.get('project') or ''))}"
         text = f"↗ {L('open_panel')}"
         if vlen(head) + 3 + len(text) <= width:
             head += f" {fg(C_SEP, chr(183))} " + fg(C_PATH, link(url, text))
-    rows = [head]
-    shown = items[:2]
-    if shown:
-        lw = 4
-        nw = max(len(f"#{it.get('number')}") for it in shown)
-        marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
-        for i, it in enumerate(shown):
-            prefix = pad(fg(C_MUTED, f"+{count - 2}"), lw) if i == 1 and count > 2 else " " * lw
-            mark, mc = marks.get(it.get("status"), ("·", C_SEP))
-            num = f"#{it.get('number')}"
-            num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
-            room = width - lw - nw - 3
-            # A title is user data: control characters (ESC and the like) never reach the terminal.
-            title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
-            if len(title) > room:
-                title = title[:max(0, room - 1)] + "…"
-            title = fg(C_TASK, title) if it.get("task") == current else val(title)
-            rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
-    return rows + [""] * (3 - len(rows))
+    return head
+
+
+def task_rows(open_, current, width, n):
+    """Up to `n` of the most pressing open tasks, the last one marked +N when more are open."""
+    items = (open_.get("items") or [])[:n]
+    if not items:
+        return []
+    count = int(open_.get("count") or 0)
+    lw, nw = 4, max(len(f"#{it.get('number')}") for it in items)
+    marks = {"in-progress": ("▸", C_TASK), "waiting": ("…", C_MUTED)}
+    rows = []
+    for i, it in enumerate(items):
+        last = i == len(items) - 1 and count > len(items)
+        prefix = pad(fg(C_MUTED, f"+{count - len(items)}"), lw) if last else " " * lw
+        mark, mc = marks.get(it.get("status"), ("·", C_SEP))
+        num = f"#{it.get('number')}"
+        num = fg(C_WARN, f"{num:<{nw}}") if it.get("priority") == "risk" else fg(C_LABEL, f"{num:<{nw}}")
+        room = width - lw - nw - 3
+        # A title is user data: control characters (ESC and the like) never reach the terminal.
+        title = CONTROL_RE.sub(" ", str(it.get("title") or ""))
+        if len(title) > room:
+            title = title[:max(0, room - 1)] + "…"
+        title = fg(C_TASK, title) if it.get("task") == current else val(title)
+        rows.append(f"{prefix}{num} {fg(mc, mark)} {title}")
+    return rows
 
 
 # ══════════════════════════════ RENDER ═════════════════════════════════════
@@ -897,9 +903,16 @@ def render(data):
         # Claude Code pads the line by one column on each side.
         room = tw - x - 2
         if room >= TASKS_MIN_W:
-            for i, cell in enumerate(task_column(open_, st.get("task"), room), start=1):
-                if cell:
-                    out[i] = pad(out[i], x - 3) + sep + cell
+            # The count and the dashboard link close the first line when they fit there,
+            # leaving all three gauge rows to tasks; otherwise they head the column.
+            head = task_head(open_, room)
+            if vlen(out[0]) + 3 + vlen(head) <= tw - 2:
+                out[0] += sep + head
+                cells = task_rows(open_, st.get("task"), room, 3)
+            else:
+                cells = [head] + task_rows(open_, st.get("task"), room, 2)
+            for i, cell in enumerate(cells, start=1):
+                out[i] = pad(out[i], x - 3) + sep + cell
     return "\n".join(out)
 
 
