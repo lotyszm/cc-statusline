@@ -6,6 +6,8 @@ import json
 import os
 import sqlite3
 import subprocess
+import threading
+from unittest import mock
 
 from tracker import cli, config, db, hook, ledger, status, worklist
 from tests.helpers import IsolatedTestCase, local_ts
@@ -98,6 +100,34 @@ class WorklistTest(IsolatedTestCase):
         self.add("One")
         with self.assertRaises(sqlite3.IntegrityError):
             db.set_task(self.conn, "acme:other", project="storefront", number=1)
+
+    def test_two_adds_at_once_get_two_numbers(self):
+        # Two agents run `tasks add` at the same moment: the other one adds its
+        # task after this one has picked a number and before it has stored it.
+        proj = worklist.ensure_project(self.conn, self.cfg, self.repo)
+
+        def other_agent():
+            conn = db.connect()
+            try:
+                worklist.add(conn, proj, "from agent B")
+            finally:
+                conn.close()
+
+        other = threading.Thread(target=other_agent)
+        key_for = worklist.key_for
+
+        def numbered(p, n):
+            if other.ident is None:
+                other.start()
+                other.join(0.5)         # it finishes, or waits for this add to commit
+            return key_for(p, n)
+
+        with mock.patch.object(worklist, "key_for", numbered):
+            worklist.add(self.conn, proj, "from agent A")
+        other.join()
+        titles = {r["number"]: r["title"] for r in
+                  self.conn.execute("SELECT number, title FROM tasks WHERE project = ?", (proj["slug"],))}
+        self.assertEqual(titles, {1: "from agent A", 2: "from agent B"})
 
     # ── changes ─────────────────────────────────────────────────────────────
 

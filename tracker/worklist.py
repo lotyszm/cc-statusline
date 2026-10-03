@@ -146,11 +146,13 @@ def _history(conn, task, field, before, after, now, author):
 def add(conn, proj, title, now=None, author=None, kind="task", status="open", **fields):
     """A new task in a project; returns its key."""
     now = now or time.time()
-    number = conn.execute("SELECT coalesce(max(number), 0) + 1 FROM tasks WHERE project = ?",
-                          (proj["slug"],)).fetchone()[0]
-    key = key_for(proj, number)
-    conn.execute("BEGIN")
+    # The number is taken under the write lock: two adds at once would get the
+    # same one, and the second would write over the first.
+    conn.execute("BEGIN IMMEDIATE")
     try:
+        number = conn.execute("SELECT coalesce(max(number), 0) + 1 FROM tasks WHERE project = ?",
+                              (proj["slug"],)).fetchone()[0]
+        key = key_for(proj, number)
         db.set_task(conn, key, now, title=title, kind=kind, status=status, project=proj["slug"],
                     number=number, created_at=now, **{k: v for k, v in fields.items() if v is not None})
         _history(conn, key, "created", None, title, now, author)
