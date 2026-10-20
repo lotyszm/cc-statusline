@@ -25,6 +25,8 @@ idle_minutes = 15        # a gap longer than this between agent events is a brea
 tool_cap_minutes = 60    # one running tool (tests, a build) counts at most this long
 overlap = "split"        # "split": parallel client sessions share the clock, own projects never
                          # reduce client hours; "full": every session counts fully
+subagents = "session"    # "session": a session's subagents are part of its time; "workers": with
+                         # overlap = "full" each subagent counts fully, like a worker of its own
 currency = "PLN"
 
 # Rules map a working directory to a client; the first match wins.
@@ -95,6 +97,9 @@ class Config:
         self.overlap = data.get("overlap", "split")
         if self.overlap not in ("split", "full"):
             self.overlap = "split"
+        self.subagents = data.get("subagents", "session")
+        if self.subagents not in ("session", "workers"):
+            self.subagents = "session"
         self.currency = data.get("currency", "")
         self.rules = [Rule(compile_path(r["path"]), r.get("client"), bool(r.get("billable", True)))
                       for r in data.get("rule", []) if r.get("path")]

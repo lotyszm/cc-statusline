@@ -227,7 +227,9 @@ counts them again when the settings, the code or anything that reaches back into
 - Days are split at local midnight.
 - Parallel sessions (`overlap = "split"`, the default): sessions for clients share the clock,
   so two sessions side by side do not bill the same hour twice, and your own projects get
-  time only while no client session is active. `overlap = "full"` counts every session in full.
+  time only while no client session is active. `overlap = "full"` counts every session in full,
+  and every subagent pinned to a task of its own, or with `subagents = "workers"` every subagent
+  ([below](#subagents)). Reports show the clock time next to it.
 - `cc-statusline explain --session ID` shows how one session's time was counted, block by
   block, with every break.
 
@@ -261,6 +263,43 @@ In a billable project, a session's time goes to a task:
   a task, and you can assign it there.
 
 `[tasks]` in the config template shows how to change the ID patterns.
+
+### Subagents
+
+With `overlap = "full"`:
+
+- **`subagents = "workers"`**: every subagent counts in full, like a worker of its own, so five
+  agents at work for an hour are five hours. The session counts while it works itself, but not
+  while it only waits for agents counting apart: after its turn has ended, or while a foreground
+  agent runs. With no agent at work, the session counts as before.
+- **`subagents = "session"`** (the default): subagents are part of their session's time, except
+  an agent pinned to a task of its own, which counts on that task in full; the session waiting
+  for it does not. Within one session a task never counts twice for the same moment.
+
+In split mode the session's task takes it all, as before: there every parallel agent would take a
+share of the clock.
+
+An agent's time goes to the session's task unless it is pinned to one of its own. It is pinned
+when it starts, from the work-list key its starter wrote down:
+
+- **In the description** — `DEV-CMS · d24:cms#144 · media library`, when it names exactly one
+  known task: "not #1, only #2" names two and pins nothing. The description wins over the prompt.
+- **In the prompt's first line** — when that line names exactly one known task. Further down a
+  prompt quotes related tasks and examples, so the rest of it is not read; a first line naming
+  several tasks pins nothing.
+
+The hook reads both from the agent's files next to the session transcript
+(`<session>/subagents/agent-<id>.meta.json` and `.jsonl`), on the agent's start and, if they are
+not written yet, on its first tool calls: a pin from the prompt holds until the description is
+written, and is replaced when the description names another task. A pin by hand is never replaced. The task covers the agent from its first event. A
+pinned agent is told its task when it starts. By hand:
+
+```sh
+cc-statusline task set d24:cms#144 --session <S> --agent <AGENT_ID>
+```
+
+`--agent` takes a unique prefix of the id; `task clear --agent` marks an agent's time as no
+task, and `task show` lists the agents' assignments too.
 
 ### Task keys per client
 
@@ -341,7 +380,7 @@ cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreate
 | --- | --- |
 | `cc-statusline report` | Hours per client and task, this month by default. `--last-month`, `--month 2026-09`, `--from`/`--to`, `--client`, `--by day,client,task`, `--format csv` or `md`. |
 | `cc-statusline sessions --unassigned` | Billable sessions with time not logged to a task. |
-| `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`). `task clear` and `task show` too. |
+| `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`); with `--agent A` only that subagent's. `task clear` and `task show` too. |
 | `cc-statusline tasks set ID` | Describes a task: `--title`, `--description`, `--plan`, `--status`, `--url`; `@file` or `-` reads the text. `tasks show`, `tasks list` and `tasks import FILE` too. |
 | `cc-statusline explain --session S` | How a session's time was counted. |
 | `cc-statusline dashboard` | Opens the dashboard, starting it if it is not running. |
