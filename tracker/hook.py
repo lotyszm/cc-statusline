@@ -274,23 +274,22 @@ def _pin_agent(conn, session_id, agent_id, transcript_path, now):
     description is written it is looked for again, and when it names a task
     that task wins. A pin by hand is never replaced.
 
-    (settled, task): settled once nothing more will be read, with the task the
-    agent is pinned to by now (None for none).
+    The task the agent is pinned to by now, or None.
     """
     final, prompted = f"agent:{agent_id}", f"agent-prompt:{agent_id}"
     asked = {r[0] for r in conn.execute("SELECT candidate FROM asked WHERE session_id = ? AND candidate IN (?, ?)",
                                         (session_id, final, prompted))}
     if final in asked:
-        return False, None
+        return None
     rows = conn.execute("SELECT task, origin FROM assignments WHERE session_id = ? AND agent_id = ? "
                         "ORDER BY effective_from, id", (session_id, agent_id)).fetchall()
     if any(r["origin"] not in AUTO_ORIGINS for r in rows):
         db.mark_asked(conn, session_id, final, now)     # pinned by hand
-        return False, None
+        return None
     pinned = rows[-1]["task"] if rows else None
     files = _agent_files(transcript_path, agent_id)
     if files is None:
-        return False, None
+        return None
     meta, transcript = files
 
     def pin(task, origin):
@@ -303,29 +302,26 @@ def _pin_agent(conn, session_id, agent_id, transcript_path, now):
     task = description_task(conn, description)
     if task is not None:
         db.mark_asked(conn, session_id, final, now)
-        return True, pin(task, "agent-description")
+        return pin(task, "agent-description")
     if prompted not in asked:
         prompt = _agent_prompt(transcript)
         if prompt is None:
-            return False, pinned                        # not written yet: look again on the next call
+            return pinned                               # not written yet: look again on the next call
         db.mark_asked(conn, session_id, prompted, now)
         pinned = pin(prompt_task(conn, prompt), "agent-prompt")
     if description is None:
-        return False, pinned                            # the description may still name another task
+        return pinned                                   # the description may still name another task
     db.mark_asked(conn, session_id, final, now)
-    return True, pinned
+    return pinned
 
 
-def _agent_context(conn, session_id, agent_id, task):
-    if task:
-        row = db.task_details(conn, task)
-        title = f" ({_first_line(row['title'])})" if row is not None and row["title"] else ""
-        return f"cc-statusline: this agent's time is logged to {task}{title}."
-    if not _has_worklist(conn):
+def _agent_context(conn, cfg, task):
+    # In split mode an agent's own task does not count: its time stays with the session's.
+    if not task or cfg.overlap != "full":
         return None
-    return ("cc-statusline: this agent's time goes to its session's task. If you work on a different "
-            f"work-list task, log your time to it: `{cli_command()} task set <TASK> --session {session_id} "
-            f"--agent {agent_id}`.")
+    row = db.task_details(conn, task)
+    title = f" ({_first_line(row['title'])})" if row is not None and row["title"] else ""
+    return f"cc-statusline: this agent's time is logged to {task}{title}."
 
 
 def handle(payload, conn, cfg, now, env):
@@ -351,10 +347,9 @@ def handle(payload, conn, cfg, now, env):
 
     agent_id = payload.get("agent_id")
     if agent_id and event in ("SubagentStart", "PreToolUse"):
-        settled, pinned = _pin_agent(conn, session_id, agent_id, payload.get("transcript_path"), now)
+        pinned = _pin_agent(conn, session_id, agent_id, payload.get("transcript_path"), now)
         if event == "SubagentStart":
-            return _output(event, _agent_context(conn, session_id, agent_id, pinned)
-                           if settled or pinned else None)
+            return _output(event, _agent_context(conn, cfg, pinned))
 
     if event == "SessionStart":
         status.cleanup(now)

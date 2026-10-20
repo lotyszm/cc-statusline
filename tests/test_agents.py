@@ -148,7 +148,7 @@ class AutoPinTest(IsolatedTestCase):
         os.makedirs(os.path.join(self.repo, ".git"))
         with open(os.path.join(self.repo, ".git", "HEAD"), "w") as f:
             f.write("ref: refs/heads/main\n")
-        self.write_config(f'[[rule]]\npath = "{self.tmp}/clients/{{client}}/**"\n')
+        self.write_config(f'overlap = "full"\n[[rule]]\npath = "{self.tmp}/clients/{{client}}/**"\n')
         self.cfg = config.load()
         self.conn = db.connect()
         self.conn.execute("INSERT INTO projects (slug, client, path, created_at) VALUES ('cms', 'acme', ?, 0)",
@@ -211,11 +211,17 @@ class AutoPinTest(IsolatedTestCase):
         self.write_agent("a1", description="Explore", prompt=f"Compare {self.a} with {self.b}.")
         out = self.fire("SubagentStart", "a1")
         self.assertEqual(self.pinned(), {})
-        self.assertIn("--agent a1", out["hookSpecificOutput"]["additionalContext"])
+        self.assertIsNone(out)                               # an agent without a task is told nothing
         # decided once: no rereading, and no pin later either
         self.write_agent("a1", description=f"now {self.a}")
         self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t1")
         self.assertEqual(self.pinned(), {})
+
+    def test_in_split_mode_a_pinned_agent_is_not_told_a_task_that_does_not_count(self):
+        self.cfg.overlap = "split"
+        self.write_agent("a1", description=f"DEV-CMS · {self.a} · media")
+        self.assertIsNone(self.fire("SubagentStart", "a1"))
+        self.assertEqual(self.pinned(), {"a1": [(self.now, self.a)]})
 
     def test_a_description_naming_two_tasks_pins_nothing(self):
         for agent, description in (("a1", f"NIE {self.a}, tylko {self.b}"),
