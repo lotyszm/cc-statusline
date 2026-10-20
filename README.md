@@ -274,14 +274,16 @@ share of the clock.
 
 An agent is pinned when it starts, from the work-list key its starter wrote down:
 
-- **In the description** — `DEV-CMS · d24:cms#144 · media library`. The first known key wins.
+- **In the description** — `DEV-CMS · d24:cms#144 · media library`, when it names exactly one
+  known task: "not #1, only #2" names two and pins nothing. The description wins over the prompt.
 - **In the prompt's first line** — when that line names exactly one known task. Further down a
   prompt quotes related tasks and examples, so the rest of it is not read; a first line naming
   several tasks pins nothing.
 
 The hook reads both from the agent's files next to the session transcript
 (`<session>/subagents/agent-<id>.meta.json` and `.jsonl`), on the agent's start and, if they are
-not written yet, on its first tool calls. The task covers the agent from its first event. An
+not written yet, on its first tool calls: a pin from the prompt holds until the description is
+written, and is replaced when the description names another task. A pin by hand is never replaced. The task covers the agent from its first event. An
 agent that was not pinned is told its id and the command to pin itself:
 
 ```sh

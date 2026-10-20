@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sqlite3
+from unittest import mock
 
 from tracker import cli, config, db, hook, ledger, paths, worklist
 from tests.helpers import IsolatedTestCase
@@ -215,6 +216,54 @@ class AutoPinTest(IsolatedTestCase):
         self.write_agent("a1", description=f"now {self.a}")
         self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t1")
         self.assertEqual(self.pinned(), {})
+
+    def test_a_description_naming_two_tasks_pins_nothing(self):
+        for agent, description in (("a1", f"NIE {self.a}, tylko {self.b}"),
+                                   ("a2", f"regresja po {self.a} psuje {self.b}")):
+            self.write_agent(agent, description=description, prompt="Repo: shop")
+            self.fire("SubagentStart", agent)
+        self.assertEqual(self.pinned(), {})
+
+    def test_a_description_written_after_the_start_is_still_read(self):
+        start = self.now
+        self.write_agent("a1", prompt="Repo: shop, no task here")
+        self.assertIsNone(self.fire("SubagentStart", "a1"))
+        self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t1")
+        self.assertEqual(self.pinned(), {})
+        self.write_agent("a1", description=f"DEV-CMS · {self.b}")
+        self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t2")
+        self.assertEqual(self.pinned(), {"a1": [(start, self.b)]})
+
+    def test_the_description_wins_over_a_pin_from_the_prompt(self):
+        start = self.now
+        self.write_agent("a1", prompt=f"Task {self.a}: media.")
+        out = self.fire("SubagentStart", "a1")
+        self.assertIn(self.a, out["hookSpecificOutput"]["additionalContext"])
+        self.write_agent("a1", description=f"DEV-CMS · {self.b}")
+        self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t1")
+        self.assertEqual(self.pinned(), {"a1": [(start, self.a), (start, self.b)]})
+        log = ledger._TaskLog(db.agent_assignments(self.conn, ["sess-1"])[("sess-1", "a1")])
+        self.assertEqual(log.at(start)[1], self.b)          # the later one at the same moment wins
+        # settled: a later description is not read again
+        self.write_agent("a1", description=f"DEV-CMS · {self.a}")
+        self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t2")
+        self.assertEqual(len(self.pinned()["a1"]), 2)
+
+    def test_a_pin_by_hand_wins_over_a_description_written_later(self):
+        self.write_agent("a1", prompt=f"Task {self.a}: media.")
+        self.fire("SubagentStart", "a1")
+        db.add_assignment(self.conn, "sess-1", self.b, self.now, "cli", agent_id="a1")
+        self.write_agent("a1", description=f"DEV-CMS · {self.a}")
+        self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id="t1")
+        self.assertEqual([t for _, t in self.pinned()["a1"]], [self.a, self.b])
+
+    def test_without_a_description_the_prompt_is_read_once(self):
+        self.write_agent("a1", prompt=f"Task {self.a}: media.")
+        with mock.patch.object(hook, "_agent_prompt", wraps=hook._agent_prompt) as spy:
+            for i in range(3):
+                self.fire("PreToolUse", "a1", dt=5, tool_name="Read", tool_use_id=f"t{i}")
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.pinned(), {"a1": [(self.now - 10, self.a)]})
 
     def test_unknown_keys_are_ignored(self):
         self.write_agent("a1", description="acme:cms#999 and cms#12345", prompt="nothing here")

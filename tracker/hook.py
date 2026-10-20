@@ -204,75 +204,116 @@ def _agent_files(transcript_path, agent_id):
     return where / f"agent-{agent_id}.meta.json", where / f"agent-{agent_id}.jsonl"
 
 
-def _agent_brief(meta, transcript):
-    """(description, prompt) the subagent was started with; either is None while unknown."""
-    description = prompt = None
+def _agent_description(meta):
+    """The description the subagent was started with: '' when it has none, None while unwritten."""
     try:
-        description = json.loads(meta.read_text(encoding="utf-8")).get("description") or None
-    except (OSError, ValueError, AttributeError):
-        pass
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return (data.get("description") or "") if isinstance(data, dict) else ""
+
+
+def _agent_prompt(transcript):
+    """The subagent's prompt: '' when unreadable as text, None while unwritten."""
     try:
         with open(transcript, "rb") as f:
             message = json.loads(f.readline(PROMPT_BYTES)).get("message") or {}
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            content = "\n".join(c.get("text") or "" for c in content if isinstance(c, dict))
-        prompt = content if isinstance(content, str) else ""
     except (OSError, ValueError, AttributeError):
-        pass
-    return description, prompt
+        return None
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        content = "\n".join(c.get("text") or "" for c in content if isinstance(c, dict))
+    return content if isinstance(content, str) else ""
+
+
+def _known(conn, text):
+    found = []
+    for ref in TASK_KEY.findall(text or ""):
+        key = worklist.resolve(conn, ref)
+        if key and key not in found:
+            found.append(key)
+    return found
+
+
+def _only(keys):
+    return keys[0] if len(keys) == 1 else None
+
+
+def description_task(conn, description):
+    """The task a description names, when it names exactly one known task.
+
+    "Not #1, only #2" or "a regression after #1 breaks #2" name two: neither
+    the first nor the last is reliably the agent's.
+    """
+    return _only(_known(conn, description))
+
+
+def prompt_task(conn, prompt):
+    """The task the prompt's first line names, when it names exactly one known task.
+
+    Further down a prompt mentions related tasks and examples, which once
+    pinned an agent to a key quoted as an example.
+    """
+    return _only(_known(conn, next((line for line in (prompt or "").splitlines() if line.strip()), None)))
 
 
 def agent_task(conn, description, prompt):
-    """The work-list task a subagent was started for, or None.
+    """The work-list task a subagent was started for, or None: the description's, else the prompt's."""
+    return description_task(conn, description) or prompt_task(conn, prompt)
 
-    The first known key in the description wins. Of the prompt only its first
-    line counts, and only when it names exactly one known task: further down a
-    prompt mentions related tasks and examples, which once pinned an agent to a
-    key quoted as an example.
-    """
-    def known(text):
-        found = []
-        for ref in TASK_KEY.findall(text or ""):
-            key = worklist.resolve(conn, ref)
-            if key and key not in found:
-                found.append(key)
-        return found
 
-    in_description = known(description)
-    if in_description:
-        return in_description[0]
-    in_prompt = known(next((line for line in (prompt or "").splitlines() if line.strip()), None))
-    return in_prompt[0] if len(in_prompt) == 1 else None
+AUTO_ORIGINS = ("agent-prompt", "agent-description")
 
 
 def _pin_agent(conn, session_id, agent_id, transcript_path, now):
     """Log a new subagent's time to the task its description or prompt names.
 
-    Tried on the subagent's start and on its tool calls until its transcript can
-    be read, which Claude Code may write only after the start hook ran.
-    (decided, task): decided once this call settled it, with the task it pinned
-    or None when none is named.
+    Tried on the subagent's start and on its tool calls, since Claude Code may
+    write the agent's files only after the start hook ran. The prompt alone
+    may pin the agent, but only the description settles it: until the
+    description is written it is looked for again, and when it names a task
+    that task wins. A pin by hand is never replaced.
+
+    (settled, task): settled once nothing more will be read, with the task the
+    agent is pinned to by now (None for none).
     """
-    mark = f"agent:{agent_id}"
-    if conn.execute("SELECT 1 FROM asked WHERE session_id = ? AND candidate = ?", (session_id, mark)).fetchone():
+    final, prompted = f"agent:{agent_id}", f"agent-prompt:{agent_id}"
+    asked = {r[0] for r in conn.execute("SELECT candidate FROM asked WHERE session_id = ? AND candidate IN (?, ?)",
+                                        (session_id, final, prompted))}
+    if final in asked:
         return False, None
-    if conn.execute("SELECT 1 FROM assignments WHERE session_id = ? AND agent_id = ? LIMIT 1",
-                    (session_id, agent_id)).fetchone():
-        db.mark_asked(conn, session_id, mark, now)      # pinned by hand already
+    rows = conn.execute("SELECT task, origin FROM assignments WHERE session_id = ? AND agent_id = ? "
+                        "ORDER BY effective_from, id", (session_id, agent_id)).fetchall()
+    if any(r["origin"] not in AUTO_ORIGINS for r in rows):
+        db.mark_asked(conn, session_id, final, now)     # pinned by hand
         return False, None
+    pinned = rows[-1]["task"] if rows else None
     files = _agent_files(transcript_path, agent_id)
     if files is None:
         return False, None
-    description, prompt = _agent_brief(*files)
-    task = agent_task(conn, description, prompt)
-    if task is None and prompt is None:
-        return False, None                              # the prompt is not written yet
-    db.mark_asked(conn, session_id, mark, now)
+    meta, transcript = files
+
+    def pin(task, origin):
+        if task is not None and task != pinned:
+            db.add_assignment(conn, session_id, task, db.agent_first_ts(conn, session_id, agent_id) or now,
+                              origin, now, agent_id=agent_id)
+        return task or pinned
+
+    description = _agent_description(meta)
+    task = description_task(conn, description)
     if task is not None:
-        db.add_assignment(conn, session_id, task, db.agent_first_ts(conn, session_id, agent_id) or now,
-                          "agent-prompt", now, agent_id=agent_id)
-    return True, task
+        db.mark_asked(conn, session_id, final, now)
+        return True, pin(task, "agent-description")
+    if prompted not in asked:
+        prompt = _agent_prompt(transcript)
+        if prompt is None:
+            return False, pinned                        # not written yet: look again on the next call
+        db.mark_asked(conn, session_id, prompted, now)
+        pinned = pin(prompt_task(conn, prompt), "agent-prompt")
+    if description is None:
+        return False, pinned                            # the description may still name another task
+    db.mark_asked(conn, session_id, final, now)
+    return True, pinned
 
 
 def _agent_context(conn, session_id, agent_id, task):
@@ -310,9 +351,10 @@ def handle(payload, conn, cfg, now, env):
 
     agent_id = payload.get("agent_id")
     if agent_id and event in ("SubagentStart", "PreToolUse"):
-        decided, pinned = _pin_agent(conn, session_id, agent_id, payload.get("transcript_path"), now)
+        settled, pinned = _pin_agent(conn, session_id, agent_id, payload.get("transcript_path"), now)
         if event == "SubagentStart":
-            return _output(event, _agent_context(conn, session_id, agent_id, pinned) if decided else None)
+            return _output(event, _agent_context(conn, session_id, agent_id, pinned)
+                           if settled or pinned else None)
 
     if event == "SessionStart":
         status.cleanup(now)
