@@ -275,16 +275,18 @@ def breakdown(conn, cfg, session_id, start=None, end=None):
             shares[key[1]] += secs
 
     blocks = []
+    reach = None                # where work so far ends: agents on tasks of their own overlap
     for i, (s, e, k) in enumerate(mine):
         last = blocks[-1] if blocks else None
-        if last and s > last["end"]:
+        if last and s > reach:
             closed = conn.execute("SELECT 1 FROM events WHERE session_id = ? AND kind = 'session_end' "
-                                  "AND ts >= ? AND ts <= ? LIMIT 1", (session_id, last["end"] - 1, s)).fetchone()
-            minutes = round((s - last["end"]) / 60)
-            blocks.append({"kind": "break", "start": last["end"], "end": s, "seconds": s - last["end"],
+                                  "AND ts >= ? AND ts <= ? LIMIT 1", (session_id, reach - 1, s)).fetchone()
+            minutes = round((s - reach) / 60)
+            blocks.append({"kind": "break", "start": reach, "end": s, "seconds": s - reach,
                            "counted": 0.0, "note": "session closed" if closed
                            else f"no agent activity for {minutes} min"})
             last = blocks[-1]
+        reach = e if reach is None else max(reach, e)
         if last and last["kind"] == "work" and last["end"] == s and (last["client"], last["task"]) == (k.client, k.task):
             last["end"] = e
             last["seconds"] += e - s

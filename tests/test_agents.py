@@ -87,6 +87,23 @@ class AgentStreamsTest(LedgerTestCase):
         new = ledger.intervals(self.conn, self.cfg, self.t0 - 3600, self.t0 + 6 * 3600, per_agent=True)
         self.assertEqual(new, old)
 
+    def test_explain_finds_no_break_inside_overlapping_agents(self):
+        self.cfg.overlap = "full"
+        self.add("s1", 30 * MIN, "prompt")                 # back after a 19-minute break
+        self.add("s1", 31 * MIN, "stop")
+        self.pin("a1", "acme:A")
+        self.pin("a2", "acme:B", at=60)
+        self.agent("a3", 100, 300)                          # a short one, ending long before a1
+        before = ledger.breakdown(self.conn, self.cfg, "s1")["totals"]
+        self.pin("a3", "acme:C", at=100)
+        after = ledger.breakdown(self.conn, self.cfg, "s1")
+        self.assertEqual(after["totals"]["breaks"], before["breaks"])
+        self.assertEqual(round(after["totals"]["breaks"]), 30 * MIN - 660)   # from a1's end, not a3's
+        # a3's 200 s move from the session's stream to acme:C
+        self.assertEqual(round(after["totals"]["credited"]), round(before["credited"]))
+        self.assertEqual(round(sum(b["seconds"] for b in after["blocks"] if b.get("task") == "acme:C")), 200)
+        self.assertEqual([b["kind"] for b in after["blocks"]].count("break"), 1)
+
     def test_the_status_line_and_task_history_keep_the_sessions_task(self):
         db.add_assignment(self.conn, "s1", "acme:S", self.t0, "test")
         self.pin("a1", "acme:A")
