@@ -275,8 +275,9 @@ share of the clock.
 An agent is pinned when it starts, from the work-list key its starter wrote down:
 
 - **In the description** — `DEV-CMS · d24:cms#144 · media library`. The first known key wins.
-- **In the prompt** — when the prompt names exactly one known task. A prompt naming several is
-  ambiguous and pins nothing; put the key in the description then.
+- **In the prompt's first line** — when that line names exactly one known task. Further down a
+  prompt quotes related tasks and examples, so the rest of it is not read; a first line naming
+  several tasks pins nothing.
 
 The hook reads both from the agent's files next to the session transcript
 (`<session>/subagents/agent-<id>.meta.json` and `.jsonl`), on the agent's start and, if they are

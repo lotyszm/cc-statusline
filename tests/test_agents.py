@@ -181,6 +181,14 @@ class AutoPinTest(IsolatedTestCase):
         self.fire("PreToolUse", "a1", dt=10, tool_name="Read", tool_use_id="t1")
         self.assertEqual(self.pinned(), {"a1": [(start, self.b)]})
 
+    def test_only_the_first_line_of_the_prompt_counts(self):
+        self.write_agent("a1", description="DEV · media", prompt=f"Repo: shop\n\nFor example {self.a}.")
+        self.fire("SubagentStart", "a1")
+        self.assertEqual(self.pinned(), {})
+        self.write_agent("a2", description="DEV · media", prompt=f"\nTask {self.a}: the media library.\nMore.")
+        self.fire("SubagentStart", "a2")
+        self.assertEqual(self.pinned(), {"a2": [(self.now, self.a)]})
+
     def test_a_prompt_naming_several_tasks_pins_nothing(self):
         self.write_agent("a1", description="Explore", prompt=f"Compare {self.a} with {self.b}.")
         out = self.fire("SubagentStart", "a1")

@@ -226,8 +226,10 @@ def _agent_brief(meta, transcript):
 def agent_task(conn, description, prompt):
     """The work-list task a subagent was started for, or None.
 
-    The first known key in the description wins; the prompt counts only when it
-    names exactly one known task, since a prompt also mentions related ones.
+    The first known key in the description wins. Of the prompt only its first
+    line counts, and only when it names exactly one known task: further down a
+    prompt mentions related tasks and examples, which once pinned an agent to a
+    key quoted as an example.
     """
     def known(text):
         found = []
@@ -240,7 +242,7 @@ def agent_task(conn, description, prompt):
     in_description = known(description)
     if in_description:
         return in_description[0]
-    in_prompt = known(prompt)
+    in_prompt = known(next((line for line in (prompt or "").splitlines() if line.strip()), None))
     return in_prompt[0] if len(in_prompt) == 1 else None
 
 
