@@ -228,7 +228,8 @@ counts them again when the settings, the code or anything that reaches back into
 - Parallel sessions (`overlap = "split"`, the default): sessions for clients share the clock,
   so two sessions side by side do not bill the same hour twice, and your own projects get
   time only while no client session is active. `overlap = "full"` counts every session in full,
-  and every subagent pinned to a task of its own ([below](#subagents-on-tasks-of-their-own)).
+  and every subagent pinned to a task of its own, or with `subagents = "workers"` every subagent
+  ([below](#subagents)). Reports show the clock time next to it.
 - `cc-statusline explain --session ID` shows how one session's time was counted, block by
   block, with every break.
 
@@ -263,16 +264,23 @@ In a billable project, a session's time goes to a task:
 
 `[tasks]` in the config template shows how to change the ID patterns.
 
-### Subagents on tasks of their own
+### Subagents
 
-A session that starts agents for different tasks works on all of them at once. With
-`overlap = "full"` each agent pinned to a task of its own counts on that task in full, while
-the session keeps its own task and its own time. An agent without a task works on the
-session's, as before. Within one session a task never counts twice for the same moment. In
-split mode the session's task takes it all, as before: there every parallel agent would take a
+With `overlap = "full"`:
+
+- **`subagents = "workers"`**: every subagent counts in full, like a worker of its own, so five
+  agents at work for an hour are five hours. The session counts while it works itself, but not
+  while it only waits for agents counting apart: after its turn has ended, or while a foreground
+  agent runs. With no agent at work, the session counts as before.
+- **`subagents = "session"`** (the default): subagents are part of their session's time, except
+  an agent pinned to a task of its own, which counts on that task in full; the session waiting
+  for it does not. Within one session a task never counts twice for the same moment.
+
+In split mode the session's task takes it all, as before: there every parallel agent would take a
 share of the clock.
 
-An agent is pinned when it starts, from the work-list key its starter wrote down:
+An agent's time goes to the session's task unless it is pinned to one of its own. It is pinned
+when it starts, from the work-list key its starter wrote down:
 
 - **In the description** — `DEV-CMS · d24:cms#144 · media library`, when it names exactly one
   known task: "not #1, only #2" names two and pins nothing. The description wins over the prompt.
@@ -283,8 +291,8 @@ An agent is pinned when it starts, from the work-list key its starter wrote down
 The hook reads both from the agent's files next to the session transcript
 (`<session>/subagents/agent-<id>.meta.json` and `.jsonl`), on the agent's start and, if they are
 not written yet, on its first tool calls: a pin from the prompt holds until the description is
-written, and is replaced when the description names another task. A pin by hand is never replaced. The task covers the agent from its first event. An
-agent that was not pinned is told its id and the command to pin itself:
+written, and is replaced when the description names another task. A pin by hand is never replaced. The task covers the agent from its first event. A
+pinned agent is told its task when it starts. By hand:
 
 ```sh
 cc-statusline task set d24:cms#144 --session <S> --agent <AGENT_ID>

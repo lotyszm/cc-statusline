@@ -13,6 +13,15 @@ from tests.test_ledger import ACME, LedgerTestCase
 MIN = 60
 
 
+def busy_agent(case, agent, start, end):
+    """A subagent of s1 at work from start to end (offsets in seconds): a tool call every two minutes."""
+    case.add("s1", start, "subagent_start", agent_id=agent)
+    for t in range(start + 120, end, 120):
+        case.add("s1", t, "tool_start", tool="Bash", tool_use_id=f"{agent}-{t}", agent_id=agent)
+        case.add("s1", t + 5, "tool_end", tool="Bash", tool_use_id=f"{agent}-{t}", agent_id=agent)
+    case.add("s1", end, "subagent_stop", agent_id=agent)
+
+
 class AgentStreamsTest(LedgerTestCase):
     """A session that starts two background agents and waits while they work 10 minutes."""
 
@@ -28,11 +37,7 @@ class AgentStreamsTest(LedgerTestCase):
             self.agent(agent, 60, 60 + 10 * MIN)
 
     def agent(self, agent, start, end):
-        self.add("s1", start, "subagent_start", agent_id=agent)
-        for t in range(start + 120, end, 120):
-            self.add("s1", t, "tool_start", tool="Bash", tool_use_id=f"{agent}-{t}", agent_id=agent)
-            self.add("s1", t + 5, "tool_end", tool="Bash", tool_use_id=f"{agent}-{t}", agent_id=agent)
-        self.add("s1", end, "subagent_stop", agent_id=agent)
+        busy_agent(self, agent, start, end)
 
     def pin(self, agent, task, at=60):
         db.add_assignment(self.conn, "s1", task, self.t0 + at, "test", agent_id=agent)
@@ -110,6 +115,80 @@ class AgentStreamsTest(LedgerTestCase):
         self.pin("a1", "acme:A")
         self.assertEqual(ledger.current(self.conn, self.cfg, "s1", now=self.t0 + 700).task, "acme:S")
         self.assertEqual([t for _, t, _ in db.assignments(self.conn, ["s1"])["s1"]], ["acme:S"])
+
+
+class WaitingSessionTest(LedgerTestCase):
+    """A session that only waits for agents counting apart does not count alongside them."""
+
+    def setUp(self):
+        super().setUp()
+        db.add_assignment(self.conn, "s1", "acme:A", self.t0, "test")
+
+    def test_waiting_on_a_foreground_agent(self):
+        self.add("s1", 0, "prompt")
+        self.add("s1", 5, "tool_start", tool="Agent", tool_use_id="fg")
+        busy_agent(self, "a1", 10, 10 + 10 * MIN)
+        self.add("s1", 612, "tool_end", tool="Agent", tool_use_id="fg")
+        self.add("s1", 620, "stop")
+        db.add_assignment(self.conn, "s1", "acme:B", self.t0 + 10, "test", agent_id="a1")
+        # Before: A 620 as well, the same ten minutes billed twice.
+        self.assertEqual(self.totals(mode="full"), {("acme", "acme:A"): 20, ("acme", "acme:B"): 600})
+
+    def test_a_turn_ended_while_a_background_agent_works(self):
+        self.add("s1", 0, "prompt")
+        self.add("s1", 5, "tool_start", tool="Agent", tool_use_id="bg")
+        self.add("s1", 7, "tool_end", tool="Agent", tool_use_id="bg")
+        self.add("s1", 9, "stop")
+        busy_agent(self, "a1", 10, 10 + 10 * MIN)
+        self.add("s1", 700, "prompt")                       # back within the idle threshold
+        self.add("s1", 760, "stop")
+        db.add_assignment(self.conn, "s1", "acme:B", self.t0 + 10, "test", agent_id="a1")
+        self.assertEqual(self.totals(mode="full"), {("acme", "acme:A"): 160, ("acme", "acme:B"): 600})
+
+
+class WorkersTest(LedgerTestCase):
+    """subagents = "workers": every subagent counts fully, like a worker of its own."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg.subagents = "workers"
+        db.add_assignment(self.conn, "s1", "acme:S", self.t0, "test")
+        self.add("s1", 0, "prompt")
+        for n, t in ((1, 20), (2, 30)):                     # starts two background agents
+            self.add("s1", t, "tool_start", tool="Agent", tool_use_id=f"spawn-{n}")
+            self.add("s1", t + 5, "tool_end", tool="Agent", tool_use_id=f"spawn-{n}")
+        self.add("s1", 40, "stop")
+        for agent in ("a1", "a2"):
+            busy_agent(self, agent, 60, 60 + 10 * MIN)
+
+    def test_two_agents_on_the_sessions_task_are_two_workers(self):
+        # 60 s of the session's own work, then 10 min each of two agents while it waits
+        self.assertEqual(self.totals(mode="full"), {("acme", "acme:S"): 60 + 600 + 600})
+
+    def test_the_session_working_alongside_its_agents_counts_too(self):
+        for t in range(60, 660, 60):
+            self.add("s1", t, "tool_start", tool="Bash", tool_use_id=f"own-{t}")
+            self.add("s1", t + 5, "tool_end", tool="Bash", tool_use_id=f"own-{t}")
+        # its own work until its last tool call ends at 605
+        self.assertEqual(self.totals(mode="full"), {("acme", "acme:S"): 605 + 600 + 600})
+
+    def test_an_agent_takes_its_own_task_from_its_pin(self):
+        db.add_assignment(self.conn, "s1", "acme:A", self.t0 + 60 + 5 * MIN, "test", agent_id="a1")
+        self.assertEqual(self.totals(mode="full"), {("acme", "acme:S"): 60 + 300 + 600, ("acme", "acme:A"): 300})
+
+    def test_split_mode_is_untouched(self):
+        before = self.totals(mode="split")
+        self.cfg.subagents = "session"
+        self.assertEqual(self.totals(mode="split"), before)
+
+    def test_a_session_without_agents_is_as_before(self):
+        self.busy("s2", 0, 10 * MIN)
+        self.add("s2", 100, "subagent_stop", agent_id="mini")   # Claude Code's own one-event agents
+        old = [iv for iv in ledger.intervals(self.conn, self.cfg, self.t0 - 3600, self.t0 + 6 * 3600,
+                                             per_agent=False) if iv[2].session_id == "s2"]
+        new = [iv for iv in ledger.intervals(self.conn, self.cfg, self.t0 - 3600, self.t0 + 6 * 3600)
+               if iv[2].session_id == "s2"]
+        self.assertEqual(new, old)
 
 
 class MigrationTest(IsolatedTestCase):

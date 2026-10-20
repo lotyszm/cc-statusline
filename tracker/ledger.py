@@ -83,15 +83,18 @@ def intervals(conn, cfg, start, end, per_agent=None):
 
     With `per_agent` (the default in full overlap mode) a subagent that has a
     task of its own is a stream of its own, counted from its events and
-    labelled with its task. The session's stream is counted as always, from
-    all of its events, but gives up the moments in which only such agents were
-    at work. A subagent without a task of its own keeps working on the
-    session's. Within a session a task is never counted twice for the same
-    moment. In split mode subagents are never separated: there every parallel
-    stream would take a share of the clock.
+    labelled with its task; with `subagents = "workers"` every subagent is,
+    labelled with the session's task until it has one of its own. The
+    session's stream is counted as always, from all of its events, but gives
+    up the moments in which only such agents were at work while the session
+    waited for them. A subagent without a task of its own otherwise keeps
+    working on the session's, and within a session a task is never counted
+    twice for the same moment. In split mode subagents are never separated:
+    there every parallel stream would take a share of the clock.
     """
     if per_agent is None:
         per_agent = cfg.overlap == "full"
+    workers = per_agent and cfg.subagents == "workers"
     margin = cfg.tool_cap + cfg.idle
     by_session = defaultdict(list)
     for row in conn.execute("SELECT * FROM events WHERE ts >= ? AND ts < ? ORDER BY session_id, ts, id",
@@ -134,46 +137,57 @@ def intervals(conn, cfg, start, end, per_agent=None):
     for sid, rows in by_session.items():
         log = _TaskLog(logs.get(sid, []))
         session = timeline.merge([span for s, e, ev in raw(rows) for span in labelled(sid, s, e, ev, log)])
-        agents = agent_logs.get(sid)
-        if not agents:
+        agents = agent_logs.get(sid) or {}
+        if not agents and not (workers and any(r["agent_id"] for r in rows)):
             out.extend(session)
             continue
-        out.extend(_with_agents(sid, rows, session, agents, raw, labelled))
+        out.extend(_with_agents(sid, rows, session, agents, log, workers, raw, labelled))
     out.sort(key=lambda iv: iv[0])
     return out
 
 
-def _with_agents(sid, rows, session, agents, raw, labelled):
-    """A session's intervals when some of its subagents have tasks of their own.
+def _working(ev):
+    """Whether a session works after its own event: not once its turn has ended,
+    nor while it waits for a foreground agent."""
+    return ev.kind not in ("stop", "waiting") and not (ev.kind == "tool_start" and ev.tool == "Agent")
 
-    The session keeps its time (`session`, counted from all its events as
-    always) except where only agents on their own tasks were active; those
-    agents' time goes to their tasks.
+
+def _with_agents(sid, rows, session, agents, log, workers, raw, labelled):
+    """A session's intervals when some of its subagents count apart from it.
+
+    Apart are the agents with tasks of their own, from the moment they got
+    them, and with `workers` every agent; each one's time goes to its task, or
+    to the session's. The session keeps its time (`session`, counted from all
+    its events as always) except where only agents apart were at work while it
+    waited for them.
     """
     by_agent = defaultdict(list)
     for r in rows:
         by_agent[r["agent_id"]].append(r)
-    others = [(s, e) for s, e, _ in raw(by_agent.pop(None, []))]  # the session's own activity...
-    pinned, apart = [], []
+    busy = [(s, e) for s, e, ev in raw(by_agent.pop(None, [])) if _working(ev)]
+    apart, streams = [], []
     for agent_id in sorted(by_agent):
         alog = agents.get(agent_id)
+        if alog is None and not workers:
+            busy += [(s, e) for s, e, _ in raw(by_agent[agent_id])]    # an agent on the session's task
+            continue
+        since = alog.times[0] if alog else float("inf")
+        tasks = _TaskLog([r for r in log.rows if r[0] < since] + (alog.rows if alog else []))
         own = []
         for s, e, ev in raw(by_agent[agent_id]):
-            if alog is None:
-                others.append((s, e))                # ...and of agents working on its task
-                continue
-            for p0, p1, key in labelled(sid, s, e, ev, alog):
-                if alog.at(p0) is None:
-                    others.append((p0, p1))          # before the agent got a task
+            for p0, p1, key in labelled(sid, s, e, ev, tasks):
+                if p0 < since and not workers:
+                    busy.append((p0, p1))           # before the agent got a task
                 else:
-                    pinned.append((p0, p1))
+                    apart.append((p0, p1))
                     own.append((p0, p1, key))
-        apart.append(timeline.merge(own))
-    only_pinned = _normalize(pinned)
-    for s, e in _normalize(others):
-        only_pinned = _cut(only_pinned, s, e)
-    rest = [(p0, p1, key) for s, e, key in session for p0, p1 in _minus(s, e, only_pinned)]
-    return _once_per_task([rest] + apart)
+        streams.append(timeline.merge(own))
+    busy = _normalize(busy)
+    only_apart = [p for s, e in _normalize(apart) for p in _minus(s, e, busy)]
+    rest = [(p0, p1, key) for s, e, key in session for p0, p1 in _minus(s, e, only_apart)]
+    if workers:
+        return rest + [iv for spans in streams for iv in spans]     # five agents on a task: five workers
+    return _once_per_task([rest] + streams)
 
 
 def _once_per_task(streams):
@@ -227,11 +241,6 @@ def _normalize(spans):
 
 def _union(covered, start, end):
     return _normalize(covered + [(start, end)])
-
-
-def _cut(covered, start, end):
-    """Sorted disjoint `covered` without [start, end)."""
-    return [piece for s, e in covered for piece in _minus(s, e, [(start, end)])]
 
 
 def _billable(key):

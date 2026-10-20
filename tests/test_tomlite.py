@@ -183,7 +183,8 @@ class ParityTest(unittest.TestCase):
 class ResultTest(unittest.TestCase):
     def test_the_template_holds_only_the_defaults(self):
         self.assertEqual(tomlite.loads(config.TEMPLATE),
-                         {"idle_minutes": 15, "tool_cap_minutes": 60, "overlap": "split", "currency": "PLN"})
+                         {"idle_minutes": 15, "tool_cap_minutes": 60, "overlap": "split", "subagents": "session",
+                          "currency": "PLN"})
 
     def test_a_typical_config(self):
         d = tomlite.loads(OWNER)
