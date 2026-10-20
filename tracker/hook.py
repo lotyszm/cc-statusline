@@ -7,6 +7,7 @@ must never break a session, so any failure ends with exit status 0 and a line in
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -14,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import config, db, gitinfo, ledger, paths, status
+from . import config, db, gitinfo, ledger, paths, status, worklist
 
 KINDS = {
     "SessionStart": "session_start",
@@ -189,6 +190,101 @@ def _reminder(conn, cfg, session_id, now):
             "one; questions alone need none.")
 
 
+# A work-list key as the coordinator writes it when it starts an agent: d24:cms#144 or cms#144.
+TASK_KEY = re.compile(r"(?<![\w:#/-])((?:[a-z0-9_-]+:)?[a-z0-9-]+#\d+)(?![\w#])")
+PROMPT_BYTES = 1024 * 1024          # the first transcript line holds the whole prompt
+
+
+def _agent_files(transcript_path, agent_id):
+    """The subagent's .meta.json and transcript, next to the session's transcript."""
+    if not transcript_path or not agent_id or "/" in agent_id:
+        return None
+    p = Path(transcript_path)
+    where = p.parent if p.parent.name == "subagents" else p.with_suffix("") / "subagents"
+    return where / f"agent-{agent_id}.meta.json", where / f"agent-{agent_id}.jsonl"
+
+
+def _agent_brief(meta, transcript):
+    """(description, prompt) the subagent was started with; either is None while unknown."""
+    description = prompt = None
+    try:
+        description = json.loads(meta.read_text(encoding="utf-8")).get("description") or None
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        with open(transcript, "rb") as f:
+            message = json.loads(f.readline(PROMPT_BYTES)).get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            content = "\n".join(c.get("text") or "" for c in content if isinstance(c, dict))
+        prompt = content if isinstance(content, str) else ""
+    except (OSError, ValueError, AttributeError):
+        pass
+    return description, prompt
+
+
+def agent_task(conn, description, prompt):
+    """The work-list task a subagent was started for, or None.
+
+    The first known key in the description wins; the prompt counts only when it
+    names exactly one known task, since a prompt also mentions related ones.
+    """
+    def known(text):
+        found = []
+        for ref in TASK_KEY.findall(text or ""):
+            key = worklist.resolve(conn, ref)
+            if key and key not in found:
+                found.append(key)
+        return found
+
+    in_description = known(description)
+    if in_description:
+        return in_description[0]
+    in_prompt = known(prompt)
+    return in_prompt[0] if len(in_prompt) == 1 else None
+
+
+def _pin_agent(conn, session_id, agent_id, transcript_path, now):
+    """Log a new subagent's time to the task its description or prompt names.
+
+    Tried on the subagent's start and on its tool calls until its transcript can
+    be read, which Claude Code may write only after the start hook ran.
+    (decided, task): decided once this call settled it, with the task it pinned
+    or None when none is named.
+    """
+    mark = f"agent:{agent_id}"
+    if conn.execute("SELECT 1 FROM asked WHERE session_id = ? AND candidate = ?", (session_id, mark)).fetchone():
+        return False, None
+    if conn.execute("SELECT 1 FROM assignments WHERE session_id = ? AND agent_id = ? LIMIT 1",
+                    (session_id, agent_id)).fetchone():
+        db.mark_asked(conn, session_id, mark, now)      # pinned by hand already
+        return False, None
+    files = _agent_files(transcript_path, agent_id)
+    if files is None:
+        return False, None
+    description, prompt = _agent_brief(*files)
+    task = agent_task(conn, description, prompt)
+    if task is None and prompt is None:
+        return False, None                              # the prompt is not written yet
+    db.mark_asked(conn, session_id, mark, now)
+    if task is not None:
+        db.add_assignment(conn, session_id, task, db.agent_first_ts(conn, session_id, agent_id) or now,
+                          "agent-prompt", now, agent_id=agent_id)
+    return True, task
+
+
+def _agent_context(conn, session_id, agent_id, task):
+    if task:
+        row = db.task_details(conn, task)
+        title = f" ({_first_line(row['title'])})" if row is not None and row["title"] else ""
+        return f"cc-statusline: this agent's time is logged to {task}{title}."
+    if not _has_worklist(conn):
+        return None
+    return ("cc-statusline: this agent's time goes to its session's task. If you work on a different "
+            f"work-list task, log your time to it: `{cli_command()} task set <TASK> --session {session_id} "
+            f"--agent {agent_id}`.")
+
+
 def handle(payload, conn, cfg, now, env):
     """Record one hook event; return the JSON to print, or None."""
     session_id = payload.get("session_id")
@@ -209,6 +305,12 @@ def handle(payload, conn, cfg, now, env):
                     tool_use_id=payload.get("tool_use_id"))
     db.touch_session(conn, session_id, now, account=_account(payload.get("transcript_path")),
                      project_dir=project_dir)
+
+    agent_id = payload.get("agent_id")
+    if agent_id and event in ("SubagentStart", "PreToolUse"):
+        decided, pinned = _pin_agent(conn, session_id, agent_id, payload.get("transcript_path"), now)
+        if event == "SubagentStart":
+            return _output(event, _agent_context(conn, session_id, agent_id, pinned) if decided else None)
 
     if event == "SessionStart":
         status.cleanup(now)

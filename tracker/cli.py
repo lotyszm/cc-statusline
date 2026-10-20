@@ -80,6 +80,13 @@ def cmd_task(args, conn, cfg, now, out):
         _err(e)
         return 2
     sess = db.session(conn, sid)
+    agent = None
+    if getattr(args, "agent", None):
+        try:
+            agent = db.find_agent(conn, sid, args.agent)
+        except LookupError as e:
+            _err(e)
+            return 2
 
     if args.action == "show":
         cur = ledger.current(conn, cfg, sid, now)
@@ -88,12 +95,26 @@ def cmd_task(args, conn, cfg, now, out):
         for eff, task, branch in db.assignments(conn, [sid])[sid]:
             print(f"  from {_local(eff)}  {task or 'no task'}" + (f"  (set on {branch})" if branch else ""),
                   file=out)
+        for (_, agent_id), rows in sorted(db.agent_assignments(conn, [sid]).items()):
+            if agent is None or agent_id == agent:
+                for eff, task, _branch in rows:
+                    print(f"  agent {agent_id} from {_local(eff)}  {task or 'no task'}", file=out)
         return 0
 
     task = args.task if args.action == "set" else None
     task = cfg.qualify(cfg.classify(sess["project_dir"])[0], task)
     try:
-        if getattr(args, "from_start", False):
+        if agent is not None:
+            # A subagent works on one thing: by default its task covers it from its first event.
+            first = db.agent_first_ts(conn, sid, agent)
+            fresh = not db.agent_assignments(conn, [sid]).get((sid, agent))
+            if args.since is not None:
+                effective = parse_when(args.since, now)
+            elif getattr(args, "from_start", False) or (fresh and task is not None):
+                effective = first
+            else:
+                effective = now
+        elif getattr(args, "from_start", False):
             effective = sess["first_ts"]
         elif args.since is not None:
             effective = parse_when(args.since, now)
@@ -109,12 +130,17 @@ def cmd_task(args, conn, cfg, now, out):
         _err(e)
         return 2
 
-    db.add_assignment(conn, sid, task, effective, "cli", now, branch=db.latest_branch(conn, sid))
+    db.add_assignment(conn, sid, task, effective, "cli", now,
+                      branch=None if agent else db.latest_branch(conn, sid), agent_id=agent)
     if task and args.title:
         db.set_task_title(conn, task, args.title, now)
     status.write(conn, cfg, sid, now)
     what = f"task {task}" + (f" ({args.title})" if task and args.title else "") if task else "no task"
-    print(f"{sid[:8]}: {what} from {_local(effective)}", file=out)
+    who = f"{sid[:8]} agent {agent}" if agent else sid[:8]
+    print(f"{who}: {what} from {_local(effective)}", file=out)
+    if agent and cfg.overlap != "full":
+        print("note: a subagent's own task counts with overlap = \"full\"; in split mode its time "
+              "stays with the session's task", file=out)
     return 0
 
 
@@ -665,6 +691,7 @@ def build_parser():
     ts = tsub.add_parser("set", help="log a session's time to a task")
     ts.add_argument("task")
     ts.add_argument("--session", required=True, help="id or unique prefix")
+    ts.add_argument("--agent", help="only this subagent of the session (id or unique prefix)")
     ts.add_argument("--title")
     when = ts.add_mutually_exclusive_group()
     when.add_argument("--from-start", action="store_true", help="from the start of the session")
@@ -672,8 +699,10 @@ def build_parser():
     tc = tsub.add_parser("clear", help="this session's time is not for any task")
     tc.add_argument("--session", required=True)
     tc.add_argument("--since")
+    tc.add_argument("--agent", help="only this subagent: its time is for no task")
     tw = tsub.add_parser("show", help="current task and history")
     tw.add_argument("--session", required=True)
+    tw.add_argument("--agent")
     t.set_defaults(func=cmd_task)
 
     k = sub.add_parser("tasks", help="the work list: tasks, their descriptions, plans, notes and history")

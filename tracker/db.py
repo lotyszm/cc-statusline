@@ -10,8 +10,8 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 6              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves;
-                                # 6: kept task time
+SCHEMA_VERSION = 7              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves;
+                                # 6: kept task time; 7: assignments.agent_id
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS assignments (
     effective_from REAL NOT NULL,
     created_at     REAL NOT NULL,
     origin         TEXT NOT NULL,
-    branch         TEXT                -- branch the session was on when it was set
+    branch         TEXT,               -- branch the session was on when it was set
+    agent_id       TEXT                -- a subagent of the session; NULL: the session itself
 );
 CREATE INDEX IF NOT EXISTS assignments_session ON assignments(session_id, effective_from);
 
@@ -182,7 +183,7 @@ TASK_DETAILS = ("description", "plan", "status", "url",
                 "evidence", "next_step", "outcome", "tests", "criteria")
 # JSON lists, appended to rather than replaced.
 TASK_LISTS = ("pitfalls", "files", "commits", "depends_on")
-TASK_COLUMNS = ([("assignments", "branch", "TEXT")]
+TASK_COLUMNS = ([("assignments", "branch", "TEXT"), ("assignments", "agent_id", "TEXT")]
                 + [("tasks", c, "TEXT") for c in TASK_DETAILS + TASK_LISTS]
                 + [("tasks", c, t) for c, t in (("number", "INTEGER"), ("created_at", "REAL"),
                                                 ("closed_at", "REAL"))])
@@ -253,26 +254,62 @@ def find_session(conn, prefix):
     return rows[0]["session_id"]
 
 
-def add_assignment(conn, session_id, task, effective_from, origin, now=None, branch=None):
+def add_assignment(conn, session_id, task, effective_from, origin, now=None, branch=None, agent_id=None):
+    """Log a session's time to a task from `effective_from`; with `agent_id`, only that subagent's."""
     conn.execute(
-        "INSERT INTO assignments (session_id, task, effective_from, created_at, origin, branch) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (session_id, task, effective_from, now or time.time(), origin, branch))
+        "INSERT INTO assignments (session_id, task, effective_from, created_at, origin, branch, agent_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, task, effective_from, now or time.time(), origin, branch, agent_id))
 
 
 def assignments(conn, session_ids):
-    """{session_id: [(effective_from, task, branch)]} ordered by time, then by creation."""
+    """{session_id: [(effective_from, task, branch)]} ordered by time, then by creation.
+
+    Only the sessions' own assignments: a subagent's are in agent_assignments.
+    """
     out = {sid: [] for sid in session_ids}
     ids = list(session_ids)
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
         rows = conn.execute(
             f"SELECT session_id, effective_from, task, branch FROM assignments "
-            f"WHERE session_id IN ({', '.join('?' * len(chunk))}) "
+            f"WHERE agent_id IS NULL AND session_id IN ({', '.join('?' * len(chunk))}) "
             f"ORDER BY session_id, effective_from, id", chunk)
         for r in rows:
             out[r["session_id"]].append((r["effective_from"], r["task"], r["branch"]))
     return out
+
+
+def agent_assignments(conn, session_ids):
+    """{(session_id, agent_id): [(effective_from, task, branch)]} for the sessions' subagents."""
+    out = {}
+    ids = list(session_ids)
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        rows = conn.execute(
+            f"SELECT session_id, agent_id, effective_from, task, branch FROM assignments "
+            f"WHERE agent_id IS NOT NULL AND session_id IN ({', '.join('?' * len(chunk))}) "
+            f"ORDER BY session_id, agent_id, effective_from, id", chunk)
+        for r in rows:
+            out.setdefault((r["session_id"], r["agent_id"]), []).append(
+                (r["effective_from"], r["task"], r["branch"]))
+    return out
+
+
+def find_agent(conn, session_id, prefix):
+    """Full id of the session's subagent for a unique prefix; LookupError otherwise."""
+    rows = conn.execute("SELECT DISTINCT agent_id FROM events WHERE session_id = ? AND agent_id LIKE ? LIMIT 2",
+                        (session_id, prefix.replace("%", "") + "%")).fetchall()
+    if len(rows) != 1:
+        raise LookupError(f"{'no' if not rows else 'more than one'} agent of session {session_id[:8]} "
+                          f"matches '{prefix}'")
+    return rows[0]["agent_id"]
+
+
+def agent_first_ts(conn, session_id, agent_id):
+    """When the subagent's first event was recorded, or None."""
+    return conn.execute("SELECT min(ts) FROM events WHERE session_id = ? AND agent_id = ?",
+                        (session_id, agent_id)).fetchone()[0]
 
 
 def latest_branch(conn, session_id):

@@ -78,8 +78,20 @@ def _key(cfg, session_id, row, project_dir, log, at=None, aliases=None, clients=
     return Key(session_id, client, billable, row["project"] or project_dir, row["branch"], task)
 
 
-def intervals(conn, cfg, start, end):
-    """Credited, labelled intervals [(start, end, Key)] clipped to [start, end)."""
+def intervals(conn, cfg, start, end, per_agent=None):
+    """Credited, labelled intervals [(start, end, Key)] clipped to [start, end).
+
+    With `per_agent` (the default in full overlap mode) a subagent that has a
+    task of its own is a stream of its own, counted from its events and
+    labelled with its task. The session's stream is counted as always, from
+    all of its events, but gives up the moments in which only such agents were
+    at work. A subagent without a task of its own keeps working on the
+    session's. Within a session a task is never counted twice for the same
+    moment. In split mode subagents are never separated: there every parallel
+    stream would take a share of the clock.
+    """
+    if per_agent is None:
+        per_agent = cfg.overlap == "full"
     margin = cfg.tool_cap + cfg.idle
     by_session = defaultdict(list)
     for row in conn.execute("SELECT * FROM events WHERE ts >= ? AND ts < ? ORDER BY session_id, ts, id",
@@ -96,27 +108,130 @@ def intervals(conn, cfg, start, end):
                               f"WHERE session_id IN ({', '.join('?' * len(chunk))})", chunk):
             project_dirs[r["session_id"]] = r["project_dir"]
     logs = db.assignments(conn, sids)
+    agent_logs = defaultdict(dict)
+    if per_agent:
+        for (sid, agent_id), rows in db.agent_assignments(conn, sids).items():
+            agent_logs[sid][agent_id] = _TaskLog(rows)
     aliases = db.task_aliases(conn)
     clients = cfg.client_flags(db.project_clients(conn))
+
+    def raw(rows):
+        events = [timeline.Event(r["ts"], r["kind"], r["tool"], r["tool_use_id"], r) for r in rows]
+        for s, e, ev in timeline.credit_session(events, cfg.idle, cfg.tool_cap):
+            s, e = max(s, start), min(e, end)
+            if s < e:
+                yield s, e, ev
+
+    def labelled(sid, s, e, ev, log):
+        # A task set in the middle of an interval counts from that moment,
+        # not from the next event.
+        cuts = [s] + log.changes_between(s, e) + [e]
+        for p0, p1 in zip(cuts, cuts[1:]):
+            yield p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0,
+                               aliases=aliases, clients=clients)
 
     out = []
     for sid, rows in by_session.items():
         log = _TaskLog(logs.get(sid, []))
-        events = [timeline.Event(r["ts"], r["kind"], r["tool"], r["tool_use_id"], r) for r in rows]
-        spans = []
-        for s, e, ev in timeline.credit_session(events, cfg.idle, cfg.tool_cap):
-            s, e = max(s, start), min(e, end)
-            if s >= e:
-                continue
-            # A task set in the middle of an interval counts from that moment,
-            # not from the next event.
-            cuts = [s] + log.changes_between(s, e) + [e]
-            for p0, p1 in zip(cuts, cuts[1:]):
-                spans.append((p0, p1, _key(cfg, sid, ev.ref, project_dirs.get(sid), log, at=p0,
-                                           aliases=aliases, clients=clients)))
-        out.extend(timeline.merge(spans))
+        session = timeline.merge([span for s, e, ev in raw(rows) for span in labelled(sid, s, e, ev, log)])
+        agents = agent_logs.get(sid)
+        if not agents:
+            out.extend(session)
+            continue
+        out.extend(_with_agents(sid, rows, session, agents, raw, labelled))
     out.sort(key=lambda iv: iv[0])
     return out
+
+
+def _with_agents(sid, rows, session, agents, raw, labelled):
+    """A session's intervals when some of its subagents have tasks of their own.
+
+    The session keeps its time (`session`, counted from all its events as
+    always) except where only agents on their own tasks were active; those
+    agents' time goes to their tasks.
+    """
+    by_agent = defaultdict(list)
+    for r in rows:
+        by_agent[r["agent_id"]].append(r)
+    others = [(s, e) for s, e, _ in raw(by_agent.pop(None, []))]  # the session's own activity...
+    pinned, apart = [], []
+    for agent_id in sorted(by_agent):
+        alog = agents.get(agent_id)
+        own = []
+        for s, e, ev in raw(by_agent[agent_id]):
+            if alog is None:
+                others.append((s, e))                # ...and of agents working on its task
+                continue
+            for p0, p1, key in labelled(sid, s, e, ev, alog):
+                if alog.at(p0) is None:
+                    others.append((p0, p1))          # before the agent got a task
+                else:
+                    pinned.append((p0, p1))
+                    own.append((p0, p1, key))
+        apart.append(timeline.merge(own))
+    only_pinned = _normalize(pinned)
+    for s, e in _normalize(others):
+        only_pinned = _cut(only_pinned, s, e)
+    rest = [(p0, p1, key) for s, e, key in session for p0, p1 in _minus(s, e, only_pinned)]
+    return _once_per_task([rest] + apart)
+
+
+def _once_per_task(streams):
+    """The streams' intervals with time a task already has from an earlier stream cut out.
+
+    Two streams of one session on the same task at the same moment are one
+    piece of work on it, not two.
+    """
+    covered = defaultdict(list)          # (client, task) -> sorted disjoint [(start, end)]
+    out = []
+    for spans in streams:
+        taken = []
+        for s, e, key in spans:
+            ident = (key.client, key.task)
+            for p0, p1 in _minus(s, e, covered[ident]):
+                out.append((p0, p1, key))
+                taken.append((ident, p0, p1))
+        for ident, p0, p1 in taken:
+            covered[ident] = _union(covered[ident], p0, p1)
+    return out
+
+
+def _minus(start, end, covered):
+    """Parts of [start, end) outside the sorted disjoint intervals `covered`."""
+    out, cur = [], start
+    for s, e in covered[max(0, bisect.bisect_left(covered, (start,)) - 1):]:
+        if e <= cur:
+            continue
+        if s >= end:
+            break
+        if s > cur:
+            out.append((cur, s))
+        cur = max(cur, e)
+        if cur >= end:
+            break
+    if cur < end:
+        out.append((cur, end))
+    return out
+
+
+def _normalize(spans):
+    """Sorted, disjoint union of [(start, end)]."""
+    merged = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _union(covered, start, end):
+    return _normalize(covered + [(start, end)])
+
+
+def _cut(covered, start, end):
+    """Sorted disjoint `covered` without [start, end)."""
+    return [piece for s, e in covered for piece in _minus(s, e, [(start, end)])]
 
 
 def _billable(key):
@@ -129,7 +244,9 @@ def allocate(conn, cfg, start, end, mode=None):
     In split mode billable sessions take the clock first: your own projects
     running alongside never reduce a client's hours.
     """
-    return timeline.allocate(intervals(conn, cfg, start, end), mode or cfg.overlap, priority=_billable)
+    mode = mode or cfg.overlap
+    return timeline.allocate(intervals(conn, cfg, start, end, per_agent=mode == "full"), mode,
+                             priority=_billable)
 
 
 def breakdown(conn, cfg, session_id, start=None, end=None):
