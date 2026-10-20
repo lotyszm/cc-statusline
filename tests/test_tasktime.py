@@ -176,6 +176,14 @@ class PastChangesTest(TaskTimeTestCase):
         self.conn.execute("UPDATE assignments SET task = 'SHOP-43'")
         self.assertSameTime(self.check("2026-09-16 12:05"), {("SHOP-43", "s1"): 1800.0})
 
+    def test_an_assignment_moved_to_another_agent_in_place(self):
+        self.cfg.overlap = "full"
+        self.work("s1", "2026-09-15 10:00", 30, agent_id="a1")
+        db.add_assignment(self.conn, "s1", "SHOP-42", local_ts("2026-09-15 10:00"), "manual", agent_id="a1")
+        self.assertSameTime(self.check("2026-09-16 12:00"), {("SHOP-42", "s1"): 1800.0})
+        self.conn.execute("UPDATE assignments SET agent_id = 'a2'")       # a1 works on the session's task again
+        self.assertNotIn(("SHOP-42", "s1"), self.check("2026-09-16 12:05"))
+
     def test_a_ticket_put_on_a_work_list_task(self):
         self.conn.execute("INSERT INTO projects (slug, client, created_at) VALUES ('storefront', 'acme', 0)")
         self.work("s1", "2026-09-15 10:00", 30, branch="feature/SHOP-42-checkout")

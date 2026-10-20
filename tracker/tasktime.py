@@ -143,7 +143,7 @@ def _events_reach(conn, cursor, loaded_to, bound):
 def _basis(conn, cfg, assign_max):
     settings = {k: v for k, v in vars(cfg).items() if k not in ("_seen", "error", "currency", "rates")}
     assigned = [tuple(r) for r in conn.execute(
-        "SELECT id, session_id, task, effective_from, branch FROM assignments WHERE id <= ? ORDER BY id",
+        "SELECT id, session_id, task, effective_from, branch, agent_id FROM assignments WHERE id <= ? ORDER BY id",
         (assign_max,))]
     zone = [os.environ.get("TZ"), time.tzname, time.timezone, time.altzone]
     data = json.dumps([_code_hash(), zone, settings, sorted(db.task_aliases(conn).items()),
