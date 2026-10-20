@@ -227,7 +227,8 @@ counts them again when the settings, the code or anything that reaches back into
 - Days are split at local midnight.
 - Parallel sessions (`overlap = "split"`, the default): sessions for clients share the clock,
   so two sessions side by side do not bill the same hour twice, and your own projects get
-  time only while no client session is active. `overlap = "full"` counts every session in full.
+  time only while no client session is active. `overlap = "full"` counts every session in full,
+  and every subagent pinned to a task of its own ([below](#subagents-on-tasks-of-their-own)).
 - `cc-statusline explain --session ID` shows how one session's time was counted, block by
   block, with every break.
 
@@ -261,6 +262,33 @@ In a billable project, a session's time goes to a task:
   a task, and you can assign it there.
 
 `[tasks]` in the config template shows how to change the ID patterns.
+
+### Subagents on tasks of their own
+
+A session that starts agents for different tasks works on all of them at once. With
+`overlap = "full"` each agent pinned to a task of its own counts on that task in full, while
+the session keeps its own task and its own time. An agent without a task works on the
+session's, as before. Within one session a task never counts twice for the same moment. In
+split mode the session's task takes it all, as before: there every parallel agent would take a
+share of the clock.
+
+An agent is pinned when it starts, from the work-list key its starter wrote down:
+
+- **In the description** — `DEV-CMS · d24:cms#144 · media library`. The first known key wins.
+- **In the prompt** — when the prompt names exactly one known task. A prompt naming several is
+  ambiguous and pins nothing; put the key in the description then.
+
+The hook reads both from the agent's files next to the session transcript
+(`<session>/subagents/agent-<id>.meta.json` and `.jsonl`), on the agent's start and, if they are
+not written yet, on its first tool calls. The task covers the agent from its first event. An
+agent that was not pinned is told its id and the command to pin itself:
+
+```sh
+cc-statusline task set d24:cms#144 --session <S> --agent <AGENT_ID>
+```
+
+`--agent` takes a unique prefix of the id; `task clear --agent` marks an agent's time as no
+task, and `task show` lists the agents' assignments too.
 
 ### Task keys per client
 
@@ -341,7 +369,7 @@ cc-statusline tasks dump --out ~/backup/worklist.sql --git   # SQL that recreate
 | --- | --- |
 | `cc-statusline report` | Hours per client and task, this month by default. `--last-month`, `--month 2026-09`, `--from`/`--to`, `--client`, `--by day,client,task`, `--format csv` or `md`. |
 | `cc-statusline sessions --unassigned` | Billable sessions with time not logged to a task. |
-| `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`). `task clear` and `task show` too. |
+| `cc-statusline task set ID --session S` | Logs a session's time to a task (`--from-start`, `--since HH:MM`, `--title`); with `--agent A` only that subagent's. `task clear` and `task show` too. |
 | `cc-statusline tasks set ID` | Describes a task: `--title`, `--description`, `--plan`, `--status`, `--url`; `@file` or `-` reads the text. `tasks show`, `tasks list` and `tasks import FILE` too. |
 | `cc-statusline explain --session S` | How a session's time was counted. |
 | `cc-statusline dashboard` | Opens the dashboard, starting it if it is not running. |
