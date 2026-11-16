@@ -394,9 +394,13 @@ def _view(conn, cfg, client, first, last, today, now, billable_only=True, ask=Tr
 
     With ask=False FlowApp is not asked: what the last preview learnt is used.
     """
-    blocks = flowapp.collect_blocks(conn, cfg, first, last, billable_only)
+    blocks = flowapp.collect_blocks(conn, cfg, first, last, billable_only=False)
+    exports = flowapp.load_exports(conn, first, last)
+    if billable_only:                   # stored rows too: a skipped unbilled block stays out of the view
+        exports = flowapp.billable_exports(exports, blocks, cfg)
+        blocks = [b for b in blocks if b.billable]
     remote = _remote(client, first, last) if ask else _known_remote(client, first, last)
-    items = flowapp.reconcile(blocks, flowapp.load_exports(conn, first, last), remote, today, now)
+    items = flowapp.reconcile(blocks, exports, remote, today, now)
     return blocks, items, remote is not None
 
 

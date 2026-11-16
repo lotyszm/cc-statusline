@@ -105,6 +105,7 @@ class Block:
     active_seconds: float
     comment: str
     redmine_id: Optional[str]
+    billable: bool = True
 
     @property
     def external_id(self):
@@ -194,7 +195,7 @@ def build_blocks(intervals, *, gap_s, step_s, titles, tickets, billable_only=Tru
             out.append(Block(key=bkey, client=client, task=k.task, project=k.project, day=d.isoformat(),
                              tracked_start=ts, tracked_stop=te, start=start, stop=min(stop, day_end),
                              active_seconds=active, comment=title or bkey,
-                             redmine_id=ticket if ticket.isdigit() else None))
+                             redmine_id=ticket if ticket.isdigit() else None, billable=bool(k.billable)))
     out.sort(key=lambda b: (b.day, b.start, b.key))
     return out
 
@@ -233,6 +234,29 @@ def load_exports(conn, day_from, day_to):
     lo, hi = str(day_from), str(day_to)
     return {r["external_id"]: r for r in conn.execute(
         "SELECT * FROM flowapp_exports WHERE day >= ? AND day <= ? ORDER BY day, orig_start", (lo, hi))}
+
+
+def billable_exports(exports, blocks, cfg):
+    """The stored rows of billable time: what the "billable only" view shows.
+
+    A row is as billable as the tracker's blocks of its task that day (`blocks`
+    counted with billable_only=False); with none left, as the client its task
+    key names, or its client's rule says.
+    """
+    by_key = defaultdict(set)
+    for b in blocks:
+        by_key[(b.day, b.key)].add(b.billable)
+    flags = cfg.client_flags()
+
+    def billable(row):
+        seen = by_key.get((row["day"], row["task"]))
+        if seen:
+            return True in seen
+        named = cfg.task_client(row["task"])
+        if named is not None:
+            return named[1]
+        return flags.get(row["client"], row["client"] is not None)
+    return {ext: row for ext, row in exports.items() if billable(row)}
 
 
 def block_from_row(row):

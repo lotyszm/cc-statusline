@@ -581,6 +581,30 @@ class FlowappEndpointTest(ServedTestCase):
         self.assertEqual((status, block["status"], block["flags"]), (200, "changed", ["exported"]))
         self.assertEqual(self.entries_asked() - asked, 0)
 
+    def test_a_stored_entry_of_unbilled_time_stays_out_of_the_billable_view(self):
+        own = f"{HOME}/dev/own/me/blog"
+        self.write_config(CONFIG + f'[[rule]]\npath = "~/dev/own/{{client}}/**"\nbillable = false\n'
+                                   f'\n[flowapp]\nurl = "{self.fake.url}"\n')
+        conn = db.connect()
+        t1 = local_ts(f"{self.day} 15:00")
+        for off, kind in ((0, "prompt"), (600, "agent"), (1200, "stop")):
+            db.record_event(conn, ts=t1 + off, session_id="s4dddddd", kind=kind, cwd=own, project=own, branch="main")
+            db.touch_session(conn, "s4dddddd", t1 + off, project_dir=own)
+        conn.close()
+
+        def keys(billable):
+            _, body = self.get(f"/api/flowapp/preview?from={self.day}&to={self.day}&billable={billable}")
+            return {(t["key"], b["status"]) for d in body["days"] for t in d["tasks"] for b in t["blocks"]}
+        everything = keys(0)
+        (unbilled,) = {k for k, _ in everything} - {"12345"}
+        _, body = self.get(f"/api/flowapp/preview?from={self.day}&to={self.day}&billable=0")
+        ext = next(b["external_id"] for d in body["days"] for t in d["tasks"] if t["key"] == unbilled
+                   for b in t["blocks"])
+        status, _ = self.post("/api/flowapp/draft", {"day": self.day, "external_id": ext, "action": "skip"})
+        self.assertEqual(status, 200)
+        self.assertIn((unbilled, "skipped"), keys(0))
+        self.assertEqual(keys(1), {("12345", "new")})
+
     def test_resend_only_for_entries_deleted_in_flowapp(self):
         status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "resend"})
         self.assertEqual(status, 400)

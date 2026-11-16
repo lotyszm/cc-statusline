@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from tracker import db, flowapp
+from tracker import config, db, flowapp
 from tests.helpers import IsolatedTestCase, local_ts
 from tests.test_flowapp_blocks import build, key, span
 
@@ -216,6 +216,19 @@ class ReconcileTest(IsolatedTestCase):
                            "comment": row["comment"], "externalId": first.external_id}, NOW)
         (it,) = self.view([first, second])
         self.assertEqual((it["status"], it["flags"], it["tracked_seconds"]), ("sent", [], 54 * 60))
+
+    def test_billable_view_leaves_out_stored_rows_of_unbilled_time(self):
+        cfg = config.Config({"rule": [{"path": "/w/own/**", "client": "own", "billable": False},
+                                      {"path": "/w/{client}/**"}]})
+        own = key(task="own:claude#9", client="own", billable=False, project="/w/own/claude")
+        billed, unbilled = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20", own)],
+                                 billable_only=False)
+        for b in (billed, unbilled):
+            flowapp.save_draft(self.conn, b, "skip", {}, NOW)
+        kept = flowapp.billable_exports(self.exports(), [billed, unbilled], cfg)
+        self.assertEqual(set(kept), {billed.external_id})
+        # With the tracker's blocks gone, the task key's client decides.
+        self.assertEqual(set(flowapp.billable_exports(self.exports(), [], cfg)), {billed.external_id})
 
     def test_sent_blocks_cannot_be_skipped_or_merged(self):
         first, second = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20")])
