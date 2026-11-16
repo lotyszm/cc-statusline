@@ -359,13 +359,21 @@ const trackedOf = (b) => b.tracked_seconds ?? span(b.tracked_start, b.tracked_st
 const roundedOf = (b) => span(b.start, b.stop);
 // What the step added to an entry nobody re-timed; the rest of rounded − tracked is a person's edit (or merge).
 const roundingOf = (b) => b.rounding_seconds ?? (roundedOf(b) - trackedOf(b));
+// An entry the tracker has since counted differently: its whole difference is the tracker's change,
+// not rounding (a sent entry whose time grew would otherwise show negative rounding).
 function overhead(blocks) {
-  let rounding = 0, edits = 0;
-  for (const b of blocks) { const r = roundingOf(b); rounding += r; edits += roundedOf(b) - trackedOf(b) - r; }
-  return { rounding, edits };
+  let rounding = 0, edits = 0, tracker = 0;
+  for (const b of blocks) {
+    const diff = roundedOf(b) - trackedOf(b);
+    if ((b.flags || []).includes("tracker_changed")) { tracker += diff; continue; }
+    const r = roundingOf(b); rounding += r; edits += diff - r;
+  }
+  return { rounding, edits, tracker };
 }
-const overheadText = ({ rounding, edits }) =>
-  `${signed(rounding)} rounding` + (Math.round(edits / 60) !== 0 ? `, ${signed(edits)} edits` : "");
+const shown = (s) => Math.round(s / 60) !== 0;
+const overheadText = ({ rounding, edits, tracker }) =>
+  `${signed(rounding)} rounding` + (shown(edits) ? `, ${signed(edits)} edits` : "") +
+  (shown(tracker) ? `, ${signed(tracker)} tracker change` : "");
 const counted = (blocks) => blocks.filter((b) => !NOT_COUNTED.has(b.status));
 // The wall-clock time the backend wrote, in the block's own offset; a stop on the next day is midnight.
 const clock = (isoStr, day) => isoStr.slice(0, 10) !== day && isoStr.slice(11, 16) === "00:00" ? "24:00" : isoStr.slice(11, 16);
