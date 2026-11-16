@@ -462,11 +462,11 @@ def _union_spans(spans):
     return out
 
 
-def _item(external_id, key, client, day, start, stop, tracked_start, tracked_stop, tracked, active, comment,
-          redmine_id, status, flags=(), error=None, flowapp_id=None, export_status=None):
+def _item(external_id, key, client, day, start, stop, tracked_start, tracked_stop, tracked, rounding, active,
+          comment, redmine_id, status, flags=(), error=None, flowapp_id=None, export_status=None):
     return {"external_id": external_id, "key": key, "client": client, "day": day, "start": start, "stop": stop,
             "tracked_start": tracked_start, "tracked_stop": tracked_stop, "tracked_seconds": tracked,
-            "active_seconds": active,
+            "rounding_seconds": rounding, "active_seconds": active,
             "comment": comment, "redmine_id": redmine_id, "status": status, "flags": list(flags),
             "error": error, "flowapp_id": flowapp_id, "export_status": export_status}
 
@@ -489,8 +489,11 @@ def reconcile(blocks, exports, remote, today, now):
     of the same task), and is then not offered again. A proposal block that
     only runs alongside a sent entry of another task is new, flagged
     overlaps_sent. A block merged into another entry counts towards that
-    entry, whose tracked time is the sum of its blocks. `remote` is FlowApp's entries for the days, or None when
-    FlowApp could not be asked: then nothing is said about the remote side.
+    entry, whose tracked time is the sum of its blocks. rounding_seconds is
+    what the step added to an entry whose times nobody changed; on an entry
+    with edited (or merged) times the whole difference is the person's edit.
+    `remote` is FlowApp's entries for the days, or None when FlowApp could
+    not be asked: then nothing is said about the remote side.
     Times stay epochs; ordered by day, start, key.
     """
     today = str(today)
@@ -564,6 +567,8 @@ def reconcile(blocks, exports, remote, today, now):
         else:
             ts = te = r["tracked_start"] if r["tracked_start"] is not None else r["orig_start"]
             tracked = active = 0.0
+        edited = (int(r["start"]), int(r["stop"])) != (int(r["orig_start"]), int(r["orig_stop"]))
+        rounding = 0.0 if edited or not mine else r["stop"] - r["start"] - tracked
         if (int(ts), int(te)) != (int(r["tracked_start"] or r["orig_start"]), int(r["tracked_stop"] or r["orig_stop"])):
             flags.append("tracker_changed")
         if r["external_id"] in moved:
@@ -586,13 +591,15 @@ def reconcile(blocks, exports, remote, today, now):
                         r["sent_redmine_id"] or "")
                 if there != ours:
                     flags.append("changed_remote")
-        out.append(_item(r["external_id"], r["task"], r["client"], r["day"], r["start"], r["stop"], ts, te, tracked, active,
+        out.append(_item(r["external_id"], r["task"], r["client"], r["day"], r["start"], r["stop"], ts, te, tracked,
+                         rounding, active,
                          r["comment"], r["redmine_id"], day_status(r["day"], status), flags, r["error"],
                          r["flowapp_id"], export_status))
 
     for b in unclaimed:
         out.append(_item(b.external_id, b.key, b.client, b.day, b.start, b.stop, b.tracked_start, b.tracked_stop,
-                         b.tracked_stop - b.tracked_start, b.active_seconds, b.comment, b.redmine_id, day_status(b.day, "new")))
+                         b.tracked_stop - b.tracked_start, b.stop - b.start - (b.tracked_stop - b.tracked_start),
+                         b.active_seconds, b.comment, b.redmine_id, day_status(b.day, "new")))
 
     sent_spans = defaultdict(list)
     for r in sent_rows:
@@ -855,7 +862,7 @@ class SendJob:
 COUNTED = ("new", "today", "draft", "sent", "changed", "error")
 SENDABLE = ("new", "today", "draft", "changed", "error")
 BLOCK_FIELDS = ("external_id", "day", "start", "stop", "tracked_start", "tracked_stop", "tracked_seconds",
-                "active_seconds",
+                "rounding_seconds", "active_seconds",
                 "comment", "redmine_id", "status", "flags", "error", "flowapp_id", "export_status")
 
 
@@ -868,7 +875,7 @@ def _block_json(it):
     out = {f: it[f] for f in BLOCK_FIELDS}
     for f in ("start", "stop", "tracked_start", "tracked_stop"):
         out[f] = iso(it[f])
-    for f in ("tracked_seconds", "active_seconds"):
+    for f in ("tracked_seconds", "rounding_seconds", "active_seconds"):
         out[f] = _secs(it[f])
     return out
 

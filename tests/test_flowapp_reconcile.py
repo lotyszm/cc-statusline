@@ -230,6 +230,21 @@ class ReconcileTest(IsolatedTestCase):
         # With the tracker's blocks gone, the task key's client decides.
         self.assertEqual(set(flowapp.billable_exports(self.exports(), [], cfg)), {billed.external_id})
 
+    def test_rounding_is_told_apart_from_edited_times(self):
+        first, second, third = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20"),
+                                      span(DAY, "13:00", "13:08")])
+        flowapp.save_draft(self.conn, first, "edit", {"comment": "Text only"}, NOW)
+        flowapp.save_draft(self.conn, third, "edit", {"stop": local_ts(f"{DAY} 13:30")}, NOW)
+        got = {it["external_id"]: it["rounding_seconds"] for it in self.view([first, second, third])}
+        # Rounding is what the step added to a block whose times nobody touched; the rest is an edit.
+        self.assertEqual(got, {first.external_id: 60, second.external_id: 0, third.external_id: 0})
+        flowapp.save_draft(self.conn, first, "merge_next", {"next": second}, NOW)
+        (merged, _) = self.view([first, second, third])
+        self.assertEqual((merged["rounding_seconds"], merged["stop"] - merged["start"] - merged["tracked_seconds"]),
+                         (0, (140 - 54) * 60))
+        day = flowapp.days_json(self.view([first, second, third]), {})[0]
+        self.assertEqual([b["rounding_seconds"] for t in day["tasks"] for b in t["blocks"]], [0, 0])
+
     def test_sent_blocks_cannot_be_skipped_or_merged(self):
         first, second = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20")])
         self.send(first)

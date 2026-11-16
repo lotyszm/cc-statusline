@@ -346,6 +346,16 @@ const span = (a, z) => (Date.parse(z) - Date.parse(a)) / 1000;
 // The tracker time an entry stands for: the sum of its blocks, so a merged entry leaves out the gap.
 const trackedOf = (b) => b.tracked_seconds ?? span(b.tracked_start, b.tracked_stop);
 const roundedOf = (b) => span(b.start, b.stop);
+// What the step added to an entry nobody re-timed; the rest of rounded − tracked is a person's edit (or merge).
+const roundingOf = (b) => b.rounding_seconds ?? (roundedOf(b) - trackedOf(b));
+function overhead(blocks) {
+  let rounding = 0, edits = 0;
+  for (const b of blocks) { const r = roundingOf(b); rounding += r; edits += roundedOf(b) - trackedOf(b) - r; }
+  return { rounding, edits };
+}
+const overheadText = ({ rounding, edits }) =>
+  `${signed(rounding)} rounding` + (Math.round(edits / 60) !== 0 ? `, ${signed(edits)} edits` : "");
+const counted = (blocks) => blocks.filter((b) => !NOT_COUNTED.has(b.status));
 // The wall-clock time the backend wrote, in the block's own offset; a stop on the next day is midnight.
 const clock = (isoStr, day) => isoStr.slice(0, 10) !== day && isoStr.slice(11, 16) === "00:00" ? "24:00" : isoStr.slice(11, 16);
 const dayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
@@ -557,7 +567,7 @@ function blockRows(d, t, b, i) {
       "aria-label": `Redmine ID of the ${start}–${stop} entry`, disabled: locked, placeholder: "–",
       "aria-invalid": state.fieldErrors.has(`${id}|redmine_id`) ? "true" : null,
       onchange: (ev) => editField(d, t, [b], "redmine_id", ev.target), onkeydown: escRevert }), fieldError(`${id}|redmine_id`)),
-    el("td", { class: "num", text: `${hm(tracked)} → ${hm(rounded)}`, title: `Rounding ${signed(rounded - tracked)}` }),
+    el("td", { class: "num", text: `${hm(tracked)} → ${hm(rounded)}`, title: overheadText(overhead([b])) }),
     statusCell(b),
     el("td", {}, actions)));
 
@@ -617,7 +627,7 @@ function taskRows(d, t) {
       "data-fid": `${tid}|rm`, "aria-label": `Redmine ID for every entry of ${t.key}`, disabled: lockedAll,
       onchange: (ev) => editField(d, t, editable, "redmine_id", ev.target), onkeydown: escRevert }), fieldError(`${tid}|redmine_id`)),
     el("td", { class: "num" }, `${hm(t.tracked_seconds)} → ${hm(t.rounded_seconds)}`,
-      el("span", { class: "sub-line", text: `${signed(t.rounded_seconds - t.tracked_seconds)} rounding` })),
+      el("span", { class: "sub-line", text: overheadText(overhead(counted(t.blocks))) })),
     el("td", {}, summary),
     el("td", {}));
   const out = [row];
@@ -640,7 +650,7 @@ function dayCard(d) {
   const totals = el("div", { class: "totals tnum" },
     "log ", el("b", { text: hm(tot.log_seconds) }), " · spent ", el("b", { text: hm(tot.spent_seconds) }),
     " · tracker ", el("b", { text: hm(tot.tracked_seconds) }), " → ", el("b", { text: hm(tot.rounded_seconds) }),
-    ` (${signed(tot.rounded_seconds - tot.tracked_seconds)})`);
+    ` (${overheadText(overhead(counted(d.tasks.flatMap((t) => t.blocks))))})`);
   const card = el("section", { class: "card", "aria-label": title }, el("div", { class: "day-head" }, h, totals));
   if (isToday) card.append(el("p", { class: "day-note", text: "Today is still running: its entries may still grow, so they are not selected by default." }));
   else if (blocked && tasks.some((t) => t.blocks.some((b) => b.status === "blocked")))
@@ -719,7 +729,7 @@ function renderSummary() {
     box.append(el("span", { class: "line tnum" },
       el("b", { text: `${sel.length} ${sel.length === 1 ? "entry" : "entries"}` }),
       ` in ${tasks.size} ${tasks.size === 1 ? "task" : "tasks"} (${posts} POST, ${sel.length - posts} PATCH) · `,
-      `tracker ${hm(tracked)} → `, el("b", { text: hm(rounded) }), ` (${signed(rounded - tracked)} rounding)`));
+      `tracker ${hm(tracked)} → `, el("b", { text: hm(rounded) }), ` (${overheadText(overhead(sel.map(({ b }) => b)))})`));
     if (missing.length) box.append(el("span", { class: "need",
       text: `${missing.length} ${missing.length === 1 ? "entry needs" : "entries need"} a reason for change before sending.` }));
   }
@@ -834,7 +844,7 @@ function openConfirm() {
   const items = [];
   if (posts) items.push(li(`${posts} new`, ` ${posts === 1 ? "entry" : "entries"} (POST)`));
   if (patches) items.push(li(`${patches} ${patches === 1 ? "correction" : "corrections"}`, " to entries already in FlowApp (PATCH)"));
-  items.push(li(hm(rounded), ` in FlowApp from ${hm(tracked)} tracked (${signed(rounded - tracked)} rounding), over ${days} ${days === 1 ? "day" : "days"}`));
+  items.push(li(hm(rounded), ` in FlowApp from ${hm(tracked)} tracked (${overheadText(overhead(sel.map(({ b }) => b)))}), over ${days} ${days === 1 ? "day" : "days"}`));
   if (today) items.push(li(`${today} from today`, ", which may still grow"));
   $("confirm-list").replaceChildren(...items);
   const minutes = Math.ceil(sel.length * 2.1 / 60);
