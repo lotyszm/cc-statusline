@@ -1,0 +1,1077 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>FlowApp export · cc-statusline</title>
+<script>
+  // The theme picked with the switch, set before anything is drawn; none follows the system.
+  try { const t = localStorage.getItem("cc-statusline-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<style>
+  /* Tokens and base components follow tasks.html and dashboard.html, so the pages read as one tool.
+     Text uses --ink and --ink-2 only: --muted and --accent stay below 4.5:1 on the light surfaces,
+     so here they mark dots, borders and focus, never words. */
+  :root {
+    color-scheme: light dark;
+    --page: light-dark(#f9f9f7, #0d0d0d);
+    --surface-1: light-dark(#fcfcfb, #1a1a19);
+    --surface-2: light-dark(#f3f2ee, #232321);
+    --ink: light-dark(#0b0b0b, #ffffff);
+    --ink-2: light-dark(#52514e, #c3c2b7);
+    --muted: #898781;
+    --grid: light-dark(#e1e0d9, #2c2c2a);
+    --axis: light-dark(#c3c2b7, #383835);
+    --shadow: 0 0 0 1px light-dark(rgba(11, 11, 11, 0.06), rgba(255, 255, 255, 0.08)),
+              0 1px 2px light-dark(rgba(11, 11, 11, 0.04), rgba(0, 0, 0, 0.4));
+    --wash: light-dark(rgba(11, 11, 11, 0.04), rgba(255, 255, 255, 0.05));
+    --accent: light-dark(#2a78d6, #3987e5);
+    --warning: #fab219;
+    --warning-ink: light-dark(#8a5a00, #f5c04a);
+    --good: light-dark(#006300, #0ca30c);
+    --danger: light-dark(#b42318, #f97066);
+    --focus: light-dark(#2a78d6, #3987e5);
+    --select: light-dark(rgba(42, 120, 214, 0.10), rgba(57, 135, 229, 0.18));
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  /* Whatever scrolls into view (Tab, find, focus) stops above the sticky footer, never under it. */
+  html { scroll-padding-bottom: calc(var(--bar-h, 72px) + 16px); }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 24px 16px 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .sub { color: var(--ink-2); margin: 2px 0 0; }
+  .soft { color: var(--ink-2); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+             clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+  button, input, select {
+    font: inherit; color: var(--ink); background: var(--surface-1);
+    border: 0; box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px;
+  }
+  button { cursor: pointer; transition: transform 160ms var(--ease-out), background-color 150ms ease; }
+  button:active:not(:disabled) { transform: scale(0.97); }
+  button:disabled { cursor: default; color: var(--ink-2); opacity: .6; }
+  @media (hover: hover) and (pointer: fine) { button:hover:not(:disabled) { background: var(--surface-2); } }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  input:focus-visible, select:focus-visible { outline-offset: 0; }
+  input:disabled { color: var(--ink-2); background: transparent; box-shadow: none; }
+  input[type="checkbox"] { box-shadow: none; padding: 0; margin: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+  input[type="checkbox"]:disabled { cursor: default; opacity: .45; }
+  input[aria-invalid="true"] { box-shadow: 0 0 0 1.5px var(--danger); }
+  a { color: inherit; text-underline-offset: 2px; }
+
+  .pages { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
+  .pages a { padding: 5px 12px; border-radius: 8px; color: var(--ink-2); text-decoration: none; }
+  .pages a[aria-current="page"] { background: var(--surface-1); box-shadow: var(--shadow); color: var(--ink); font-weight: 600; }
+  .head-end { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .segmented { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 10px; background: var(--surface-2); }
+  .segmented button { box-shadow: none; background: transparent; padding: 5px 10px; }
+  .segmented button[aria-pressed="true"] { background: var(--surface-1); box-shadow: var(--shadow); font-weight: 600; }
+  .segmented.theme button { display: inline-flex; align-items: center; padding: 6px 8px; color: var(--ink-2); }
+  .segmented.theme button[aria-pressed="true"] { color: var(--ink); }
+
+  .account { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); margin: 12px 0 0; font-size: 13px; }
+  .account .ok::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+                         background: var(--good); margin-right: 6px; vertical-align: 1px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 16px 0; }
+  .filters label { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .filters input[type="date"] { width: 9.5em; }
+  .filters .grow { flex: 1 1 auto; }
+
+  .banner { background: var(--surface-1); box-shadow: var(--shadow); border-left: 4px solid var(--warning);
+            border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; display: flex; gap: 12px;
+            align-items: flex-start; justify-content: space-between; }
+  .banner.ok { border-left-color: var(--good); }
+  .banner.fatal { border-left-color: var(--danger); }
+  .banner .msg { overflow-wrap: anywhere; }
+  .banner .msg strong { display: block; }
+  .banner .close { flex: none; box-shadow: none; background: transparent; padding: 2px 8px; color: var(--ink-2); }
+
+  .days { display: grid; gap: 16px; transition: opacity 150ms ease; }
+  .days.loading { opacity: .5; }
+  .days[inert] { opacity: .75; }
+  .card { background: var(--surface-1); box-shadow: var(--shadow); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+  .day-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 16px; margin-bottom: 8px; }
+  .day-head h2 { display: flex; align-items: center; gap: 10px; }
+  .day-head .totals { color: var(--ink-2); font-size: 13px; }
+  .day-head .totals b { color: var(--ink); font-weight: 600; }
+  .day-note { color: var(--ink-2); font-size: 13px; margin: 0 0 6px; }
+  .empty { color: var(--ink-2); padding: 8px 0; }
+
+  /* The table scrolls inside its card; the page itself never scrolls sideways. */
+  .scroll { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+  table { border-collapse: collapse; width: 100%; min-width: 1040px; table-layout: fixed; }
+  /* Fixed columns keep every day's table aligned with the others. */
+  col.c-sel { width: 32px; } col.c-what { width: 250px; } col.c-rm { width: 104px; }
+  col.c-num { width: 132px; } col.c-status { width: 270px; } col.c-act { width: 150px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+  th { color: var(--ink-2); font-weight: 500; font-size: 12px; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.sel, th.sel { width: 28px; padding-right: 0; }
+  tr.task td { border-top: 1px solid var(--axis); }
+  tr.task .what { display: flex; align-items: center; gap: 6px; min-width: 220px; }
+  tr.task .name { min-width: 0; }
+  tr.task .key { display: block; font-weight: 600; }
+  tr.task .title { display: block; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
+  tr.block td { background: var(--wash); }
+  tr.block td.what { padding-left: 38px; }
+  /* Dimmed content, not cells: a dimmed cell would also fade its row background. */
+  tr.block.off td.what > *, tr.block.off td.c-comment > *, tr.block.off td.c-rm > * { opacity: .75; }
+  @media (hover: hover) and (pointer: fine) { tr.block:hover td { background: var(--select); } }
+  tr.reason td { background: var(--wash); border-bottom-color: var(--grid); padding-top: 0; }
+  tr.reason label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--warning-ink); font-size: 13px; }
+  tr.reason input { flex: 1 1 280px; max-width: 560px; }
+
+  .disclosure { box-shadow: none; background: transparent; padding: 4px; border-radius: 6px; display: inline-flex; flex: none; color: var(--ink-2); }
+  .disclosure svg { transition: transform 120ms var(--ease-out); }
+  .disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+  .times { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .times input { width: 4.4em; padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }
+  .sub-line { display: block; color: var(--ink-2); font-size: 12px; margin-top: 2px; white-space: nowrap; }
+  .c-comment input { width: 100%; min-width: 14em; padding: 4px 8px; }
+  .c-rm input { width: 5.5em; padding: 4px 8px; font-variant-numeric: tabular-nums; }
+  .field-error { display: block; color: var(--danger); font-size: 12px; margin-top: 2px; white-space: normal; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 12px; color: var(--ink-2); }
+  .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--axis); flex: none; }
+  .chip.new::before { background: var(--accent); }
+  .chip.draft::before { background: var(--warning); }
+  .chip.sent::before { background: var(--good); }
+  .chip.changed::before { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
+  .chip.today::before { background: transparent; box-shadow: inset 0 0 0 2px var(--warning); }
+  .chip.error::before { background: var(--danger); }
+  .chip.deleted_remote::before { background: transparent; box-shadow: inset 0 0 0 2px var(--danger); }
+  .chip.skipped::before, .chip.blocked::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
+  .chip.skipped { text-decoration: line-through; }
+  .chip.error, .chip.deleted_remote { color: var(--danger); font-weight: 600; }
+  .flag { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 6px; border-radius: 999px;
+          color: var(--ink-2); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--grid); white-space: nowrap; }
+  .flag.warn { color: var(--warning-ink); box-shadow: inset 0 0 0 1px var(--warning); }
+  .err-text { display: block; color: var(--danger); font-size: 12px; margin-top: 3px; overflow-wrap: anywhere; max-width: 36em; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+  .actions button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+
+  /* The footer stays in view while the list scrolls under it. */
+  .bar { position: sticky; bottom: 0; z-index: 2; margin: 16px -16px 0; padding: 12px 16px;
+         background: var(--surface-1); box-shadow: 0 -1px 0 var(--grid), 0 -6px 16px light-dark(rgba(11,11,11,.05), rgba(0,0,0,.4)); }
+  .bar-inner { max-width: 1440px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+  .bar .summary { min-width: 0; }
+  .bar .summary .line { display: block; }
+  .bar .summary .hint { display: block; color: var(--ink-2); font-size: 12px; }
+  .bar .summary .need { color: var(--warning-ink); font-size: 12px; display: block; }
+  .bar .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+  .primary { background: var(--ink); color: var(--page); font-weight: 600; box-shadow: none; }
+  @media (hover: hover) and (pointer: fine) { .primary:hover:not(:disabled) { background: var(--ink-2); } }
+  .primary:disabled { background: var(--surface-2); color: var(--ink-2); opacity: 1; }
+  .progress { display: flex; flex-direction: column; gap: 6px; flex: 1 1 260px; min-width: 0; }
+  .track { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; box-shadow: inset 0 0 0 1px var(--grid); }
+  .fill { height: 100%; background: var(--good); transform-origin: left center; transform: scaleX(0);
+          transition: transform 300ms linear; }
+  .saved { color: var(--ink-2); font-size: 12px; }
+
+  dialog { border: 0; padding: 0; border-radius: 12px; background: var(--surface-1); color: var(--ink);
+           box-shadow: var(--shadow), 0 16px 48px rgba(0, 0, 0, .25); width: min(480px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .35); }
+  dialog[open] { opacity: 1; transform: scale(1);
+                 transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+  @starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }
+  dialog form { padding: 18px 20px; display: grid; gap: 12px; }
+  dialog h2 { font-size: 16px; }
+  dialog ul { margin: 0; padding-left: 18px; color: var(--ink-2); }
+  dialog ul li { padding: 1px 0; }
+  dialog ul b { color: var(--ink); font-weight: 600; }
+  dialog .note { color: var(--ink-2); font-size: 13px; margin: 0; }
+  dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+
+  .disabled-card h2 { margin-bottom: 6px; }
+  .disabled-card p { margin: 0 0 6px; color: var(--ink-2); }
+  .disabled-card code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--wash); border-radius: 4px; padding: 1px 4px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    button:active:not(:disabled) { transform: none; }
+    .disclosure svg, .fill { transition: none; }
+    dialog[open] { transition: opacity 150ms ease; transform: none; }
+    @starting-style { dialog[open] { opacity: 0; transform: none; } }
+  }
+  @media (max-width: 760px) {
+    .filters label.range { flex: 1 1 auto; }
+    .bar .buttons { width: 100%; }
+    .bar .buttons button { flex: 1 1 auto; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>FlowApp export</h1>
+      <p class="sub">Review the time cc-statusline counted, correct it, and send it to FlowApp. Nothing is sent until you press Send.</p>
+    </div>
+    <div class="head-end">
+      <div class="segmented theme" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="auto" title="Theme: follow the system" aria-label="Theme: follow the system"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11.5V14"/></svg></button>
+        <button type="button" data-theme-choice="light" title="Theme: light" aria-label="Theme: light"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-theme-choice="dark" title="Theme: dark" aria-label="Theme: dark"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 1 1 6.4 2.5a4.5 4.5 0 0 0 7.1 7.1z"/></svg></button>
+      </div>
+      <nav class="pages" aria-label="Pages">
+        <a href="/">Time</a>
+        <a href="/tasks">Work list</a>
+        <a href="/flowapp" aria-current="page">FlowApp</a>
+      </nav>
+    </div>
+  </header>
+  <p class="account" id="account" aria-live="polite"></p>
+
+  <nav class="filters" aria-label="Filters" id="filters">
+    <div class="segmented" role="group" aria-label="Range">
+      <button type="button" data-preset="last-week">Last week</button>
+      <button type="button" data-preset="this-week">This week</button>
+    </div>
+    <label class="range">From <input type="date" id="from"></label>
+    <label class="range">To <input type="date" id="to"></label>
+    <label>Client <select id="client"><option value="">All clients</option></select></label>
+    <label><input type="checkbox" id="billable" checked> Billable only</label>
+    <span class="grow"></span>
+    <button type="button" id="expand-all">Expand all</button>
+    <button type="button" id="reload">Reload</button>
+  </nav>
+
+  <div class="banner fatal" id="fatal" role="alert" hidden>
+    <div class="msg" id="fatal-msg"></div>
+    <button type="button" class="close" id="fatal-close" aria-label="Dismiss error">Dismiss</button>
+  </div>
+  <div class="banner" id="banner" role="status" hidden>
+    <div class="msg" id="banner-msg"></div>
+    <button type="button" class="close" id="banner-close" aria-label="Dismiss message">Dismiss</button>
+  </div>
+
+  <main class="days" id="days" aria-label="Entries by day"></main>
+
+  <div class="bar" id="bar">
+    <div class="bar-inner">
+      <div class="summary" id="summary" aria-live="polite"></div>
+      <div class="progress" id="progress" hidden>
+        <span id="progress-text" aria-live="polite"></span>
+        <div class="track" role="progressbar" id="progress-bar" aria-label="Send progress" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><div class="fill" id="progress-fill"></div></div>
+      </div>
+      <div class="buttons" id="buttons">
+        <span class="saved" id="saved" aria-live="polite"></span>
+        <button type="button" id="skip-selected">Skip selected</button>
+        <button type="button" id="send" class="primary">Send…</button>
+        <button type="button" id="cancel-job" hidden>Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <ul id="confirm-list"></ul>
+    <p class="note" id="confirm-note"></p>
+    <div class="buttons">
+      <button type="submit" value="cancel" autofocus>Cancel</button>
+      <button type="submit" value="send" class="primary" id="confirm-send"></button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const JOB_KEY = "cc-statusline-flowapp-job";
+const SELECTABLE = new Set(["new", "draft", "changed", "error", "today"]);
+const NOT_COUNTED = new Set(["skipped", "blocked", "deleted_remote"]);   // left out of the day's log and spent
+const LOCKED = new Set(["blocked", "deleted_remote"]);                   // nothing to edit until resent
+const STATUS_LABEL = { new: "new", draft: "draft", sent: "sent", changed: "changed", skipped: "skipped",
+  blocked: "blocked", error: "error", today: "today", deleted_remote: "deleted in FlowApp" };
+const STATUS_HINT = {
+  new: "Proposed from the tracker; not in FlowApp yet.",
+  draft: "Edited here; not in FlowApp yet.",
+  sent: "In FlowApp, as shown.",
+  changed: "In FlowApp, edited here since: sending corrects the FlowApp entry (PATCH).",
+  skipped: "Will not be sent and does not come back as new.",
+  blocked: "Older than 62 days: FlowApp no longer accepts it.",
+  error: "The last send failed; the message is FlowApp's own.",
+  today: "Today is still running, so the entry may still grow: not selected by default.",
+  deleted_remote: "Sent, then deleted in FlowApp. It is sent again only with Send again.",
+};
+const FLAG = {
+  tracker_changed: ["tracker changed", "The tracker counts this time differently since it was sent.", true],
+  task_changed: ["task changed", "The tracker now counts this time for another task.", true],
+  changed_remote: ["changed in FlowApp", "Someone edited this entry in FlowApp; this page will not overwrite it on its own.", true],
+  exported: ["in Redmine", "Already exported to Redmine: a correction needs a reason for change.", false],
+  overlaps_sent: ["overlaps a sent entry", "This time overlaps an entry already sent for the same day.", true],
+};
+
+const state = { from: null, to: null, preset: "last-week", client: "", billable: true, data: null, status: null,
+  selected: new Set(), seen: new Set(), selectable: new Map(), expanded: new Set(), autoOpened: new Set(),
+  reasons: new Map(), fieldErrors: new Map(), job: null, sending: false };
+
+// ---------------------------------------------------------------- formatting
+
+const pad = (n) => String(n).padStart(2, "0");
+const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseDay = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const validDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "") && !Number.isNaN(parseDay(s).getTime());
+function hm(seconds) {
+  const m = Math.round(Math.abs(seconds) / 60);
+  return `${seconds < 0 ? "−" : ""}${Math.floor(m / 60)}:${pad(m % 60)}`;
+}
+const signed = (s) => (s >= 0 ? "+" : "") + hm(s);
+const span = (a, z) => (Date.parse(z) - Date.parse(a)) / 1000;
+const trackedOf = (b) => span(b.tracked_start, b.tracked_stop);
+const roundedOf = (b) => span(b.start, b.stop);
+// The wall-clock time the backend wrote, in the block's own offset; a stop on the next day is midnight.
+const clock = (isoStr, day) => isoStr.slice(0, 10) !== day && isoStr.slice(11, 16) === "00:00" ? "24:00" : isoStr.slice(11, 16);
+const dayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+const dateLabel = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
+
+// HH:MM on a day, as ISO 8601 with this machine's offset for that moment (the dashboard runs here too).
+function toIso(day, hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = parseDay(day);
+  d.setHours(h, m, 0, 0);   // 24:00 rolls over to the next day's midnight
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  return `${iso(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+}
+// Accepts 9:12, 0912, 912 and 09:12; returns HH:MM or null.
+function normClock(v) {
+  const s = v.trim().replace(/[.h]/, ":");
+  const m = /^(\d{1,2}):?(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (mi > 59 || h > 24 || (h === 24 && mi !== 0)) return null;
+  return `${pad(h)}:${pad(mi)}`;
+}
+
+// Every piece of text from the data goes in through textContent.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k === "value") node.value = v;
+    else if (k === "checked" || k === "indeterminate") node[k] = !!v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children) if (c != null) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return node;
+}
+function chevron() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor",
+    "stroke-width": 1.75, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
+  const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p.setAttribute("d", "M6 3.5 10.5 8 6 12.5");
+  svg.append(p);
+  return svg;
+}
+const errorText = (e) => !e ? null : typeof e === "string" ? e : [e.code, e.field && `(${e.field})`, e.message].filter(Boolean).join(" ");
+
+// ---------------------------------------------------------------- server
+
+// Writes carry the header the server requires; a page from another origin cannot send it.
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-CC-Statusline": "1" },
+                                body: JSON.stringify(body) });
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* an empty or broken body still reports the status */ }
+  if (!r.ok) { const err = new Error(data.error || `HTTP ${r.status}`); err.status = r.status; err.data = data; throw err; }
+  return data;
+}
+async function getJson(path) {
+  const r = await fetch(path, { headers: { "X-CC-Statusline": "1" } });
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// ---------------------------------------------------------------- model helpers
+
+function allBlocks() {
+  const out = [];
+  for (const d of state.data?.days || []) for (const t of d.tasks) if (visibleTask(t)) for (const b of t.blocks) out.push({ d, t, b });
+  return out;
+}
+const visibleTask = (t) => !state.client || t.client === state.client;
+const isSelectable = (b) => SELECTABLE.has(b.status);
+const method = (b) => b.flowapp_id != null ? "PATCH" : "POST";
+const needsReason = (b) => b.status === "changed" && (b.flags || []).includes("exported");
+const reasonOf = (b) => (b.export_comment ?? state.reasons.get(b.external_id) ?? "").trim();
+const canMergeNext = (t, i) => {
+  const b = t.blocks[i], n = t.blocks[i + 1];
+  const free = (x) => x && x.flowapp_id == null && !NOT_COUNTED.has(x.status);
+  return free(b) && free(n);
+};
+
+// Selection: fresh blocks get the default (all sendable but today's); a block that turns sendable joins it.
+function syncSelection() {
+  for (const { b } of allBlocks()) {
+    const id = b.external_id, can = isSelectable(b), was = state.selectable.get(id);
+    if (!state.seen.has(id)) {
+      state.seen.add(id);
+      if (can && b.status !== "today") state.selected.add(id);
+    } else if (can && was === false && b.status !== "today") {
+      state.selected.add(id);
+    }
+    if (!can) state.selected.delete(id);
+    state.selectable.set(id, can);
+  }
+}
+// Tasks that need a look open by themselves the first time they are seen.
+function autoExpand(d, t) {
+  const id = `${d.day}|${t.key}`;
+  if (state.autoOpened.has(id)) return;
+  state.autoOpened.add(id);
+  const attention = t.blocks.some((b) => b.status === "error" || b.status === "deleted_remote" || needsReason(b)
+    || (b.flags || []).some((f) => FLAG[f]?.[2]));
+  if (attention) state.expanded.add(id);
+}
+
+// The day's header by the contract: log is the union of the blocks to send, spent their sum.
+function dayTotals(d) {
+  const spans = [];
+  let tracked = 0, rounded = 0;
+  for (const t of d.tasks) for (const b of t.blocks) {
+    if (NOT_COUNTED.has(b.status)) continue;
+    tracked += trackedOf(b); rounded += roundedOf(b);
+    spans.push([Date.parse(b.start), Date.parse(b.stop)]);
+  }
+  spans.sort((a, z) => a[0] - z[0]);
+  let log = 0, cur = null;
+  for (const [a, z] of spans) {
+    if (cur && a <= cur[1]) cur[1] = Math.max(cur[1], z);
+    else { if (cur) log += cur[1] - cur[0]; cur = [a, z]; }
+  }
+  if (cur) log += cur[1] - cur[0];
+  return { log_seconds: log / 1000, spent_seconds: rounded, tracked_seconds: tracked, rounded_seconds: rounded };
+}
+
+// ---------------------------------------------------------------- rendering
+
+function renderAccount() {
+  const s = state.status, box = $("account");
+  box.replaceChildren();
+  if (!s) return;
+  if (s.enabled) {
+    const until = s.expires_at ? dateLabel.format(new Date(s.expires_at)) : null;
+    box.append(el("span", { class: "ok", text: `FlowApp: ${s.name || "connected"}` }));
+    if (until) box.append(el("span", { text: `Token valid until ${until}` }));
+  }
+  box.append(el("span", { text: `Rounding up to ${s.round_minutes ?? 5} min per entry` }),
+             el("span", { text: `Gaps up to ${s.gap_minutes ?? 15} min joined` }),
+             el("span", { text: "Set in config.toml, [flowapp]" }));
+}
+
+function statusCell(b) {
+  const box = el("div", { class: "chips" },
+    el("span", { class: `chip ${b.status}`, text: STATUS_LABEL[b.status] || b.status, title: STATUS_HINT[b.status] || null }));
+  if (b.status === "changed" || ((b.status === "error") && b.flowapp_id != null)) box.append(el("span", { class: "flag", text: "PATCH" }));
+  for (const f of b.flags || []) {
+    const [label, hint, warn] = FLAG[f] || [f, null, false];
+    box.append(el("span", { class: `flag${warn ? " warn" : ""}`, text: label, title: hint }));
+  }
+  const cell = el("td", {}, box);
+  const err = errorText(b.error) || state.jobErrors?.get(b.external_id);
+  if (err) cell.append(el("span", { class: "err-text", text: err }));
+  return cell;
+}
+
+function fieldError(id) {
+  const e = state.fieldErrors.get(id);
+  return e ? el("span", { class: "field-error", id: `err-${id}`, text: e }) : null;
+}
+
+function blockRows(d, t, b, i) {
+  const id = b.external_id, locked = LOCKED.has(b.status) || b.status === "skipped" || state.sending;
+  const can = isSelectable(b);
+  const rows = [];
+  const tracked = trackedOf(b), rounded = roundedOf(b);
+  const start = clock(b.start, d.day), stop = clock(b.stop, d.day);
+  const tStart = clock(b.tracked_start, d.day), tStop = clock(b.tracked_stop, d.day);
+  const timeInput = (which, value) => el("input", { type: "text", inputmode: "numeric", autocomplete: "off", maxlength: 5,
+    value, "data-fid": `${id}|${which}`, "aria-label": `${which === "start" ? "Start" : "Stop"} of the ${start}–${stop} entry`,
+    "aria-invalid": state.fieldErrors.has(`${id}|time`) ? "true" : null,
+    "aria-describedby": state.fieldErrors.has(`${id}|time`) ? `err-${id}|time` : null,
+    disabled: locked, onchange: (ev) => editTime(d, t, b, which, ev.target), onkeydown: escRevert });
+
+  const what = el("td", { class: "what" },
+    el("span", { class: "times" }, timeInput("start", start), "–", timeInput("stop", stop)));
+  const notes = [];
+  if (tStart !== start || tStop !== stop) notes.push(`tracker ${tStart}–${tStop}`);
+  notes.push(`active ${hm(b.active_seconds || 0)}`);
+  what.append(el("span", { class: "sub-line", text: notes.join(" · ") }));
+  if ((b.flags || []).includes("task_changed")) what.append(el("span", { class: "sub-line", text: "tracker now counts this for another task" }));
+  const timeErr = fieldError(`${id}|time`);
+  if (timeErr) what.append(timeErr);
+
+  const actions = el("div", { class: "actions" });
+  if (b.status === "skipped") actions.append(el("button", { type: "button", text: "Unskip", "data-fid": `${id}|unskip`, disabled: state.sending,
+    onclick: () => draft(d, t, b, { action: "unskip" }, "Entry back in the list") }));
+  else if (b.status === "deleted_remote") actions.append(el("button", { type: "button", text: "Send again", "data-fid": `${id}|resend`, disabled: state.sending,
+    title: "Proposes it as new again; it is sent only when you press Send.",
+    onclick: () => draft(d, t, b, { action: "resend" }, "Entry proposed again") }));
+  else if (b.flowapp_id == null && SELECTABLE.has(b.status)) {
+    if (canMergeNext(t, i)) actions.append(el("button", { type: "button", text: "Merge with next", "data-fid": `${id}|merge`, disabled: state.sending,
+      onclick: () => draft(d, t, b, { action: "merge_next" }, "Entries merged") }));
+    actions.append(el("button", { type: "button", text: "Skip", "data-fid": `${id}|skip`, disabled: state.sending,
+      onclick: () => draft(d, t, b, { action: "skip" }, "Entry skipped") }));
+  }
+
+  rows.push(el("tr", { class: `block${can ? "" : " off"}`, "data-id": id },
+    el("td", { class: "sel" }, el("input", { type: "checkbox", checked: state.selected.has(id), disabled: !can || state.sending,
+      "data-fid": `${id}|sel`, "aria-label": `Send the ${start}–${stop} entry of ${t.key}`,
+      title: can ? null : STATUS_HINT[b.status], onchange: (ev) => toggle([id], ev.target.checked) })),
+    what,
+    el("td", { class: "c-comment" }, el("input", { type: "text", value: b.comment ?? "", "data-fid": `${id}|comment`,
+      "aria-label": `Comment of the ${start}–${stop} entry`, disabled: locked,
+      "aria-invalid": state.fieldErrors.has(`${id}|comment`) ? "true" : null,
+      onchange: (ev) => editField(d, t, [b], "comment", ev.target), onkeydown: escRevert }), fieldError(`${id}|comment`)),
+    el("td", { class: "c-rm" }, el("input", { type: "text", inputmode: "numeric", value: b.redmine_id ?? "", "data-fid": `${id}|rm`,
+      "aria-label": `Redmine ID of the ${start}–${stop} entry`, disabled: locked, placeholder: "–",
+      "aria-invalid": state.fieldErrors.has(`${id}|redmine_id`) ? "true" : null,
+      onchange: (ev) => editField(d, t, [b], "redmine_id", ev.target), onkeydown: escRevert }), fieldError(`${id}|redmine_id`)),
+    el("td", { class: "num", text: `${hm(tracked)} → ${hm(rounded)}`, title: `Rounding ${signed(rounded - tracked)}` }),
+    statusCell(b),
+    el("td", {}, actions)));
+
+  if (needsReason(b)) {
+    const missing = !reasonOf(b);
+    rows.push(el("tr", { class: "reason" },
+      el("td", {}), el("td", { colspan: 6 },
+        el("label", {}, "Reason for change (required: this entry is already in Redmine)",
+          el("input", { type: "text", value: reasonOf(b), "data-fid": `${id}|reason`, required: true,
+            "aria-invalid": missing ? "true" : null, placeholder: "e.g. merged two entries",
+            onchange: (ev) => editReason(d, t, b, ev.target), onkeydown: escRevert })))));
+  }
+  return rows;
+}
+
+// One value when all editable blocks share it; otherwise empty with a hint.
+function common(blocks, field) {
+  const vals = new Set(blocks.map((b) => b[field] ?? ""));
+  return vals.size === 1 ? [...vals][0] : null;
+}
+
+function taskRows(d, t) {
+  autoExpand(d, t);
+  const tid = `${d.day}|${t.key}`, open = state.expanded.has(tid);
+  const editable = t.blocks.filter((b) => !LOCKED.has(b.status) && b.status !== "skipped");
+  const ids = t.blocks.filter(isSelectable).map((b) => b.external_id);
+  const nSel = ids.filter((id) => state.selected.has(id)).length;
+  const counts = {};
+  for (const b of t.blocks) counts[b.status] = (counts[b.status] || 0) + 1;
+  const comment = common(editable, "comment"), rm = common(editable, "redmine_id");
+  const noTask = t.title == null;
+  const label = noTask ? t.key : t.key;
+
+  const summary = el("div", { class: "chips" });
+  for (const s of Object.keys(STATUS_LABEL)) if (counts[s]) summary.append(el("span", { class: `chip ${s}`, text: `${counts[s]} ${STATUS_LABEL[s]}` }));
+  const flagged = new Set(t.blocks.flatMap((b) => b.flags || []));
+  for (const f of flagged) { const [lab, hint, warn] = FLAG[f] || [f]; summary.append(el("span", { class: `flag${warn ? " warn" : ""}`, text: lab, title: hint })); }
+
+  const lockedAll = !editable.length || state.sending;
+  const row = el("tr", { class: "task" },
+    el("td", { class: "sel" }, el("input", { type: "checkbox", checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
+      disabled: !ids.length || state.sending, "data-fid": `${tid}|sel`, "aria-label": `Send every sendable entry of ${t.key}`,
+      onchange: (ev) => toggle(ids, ev.target.checked) })),
+    el("td", {}, el("div", { class: "what" },
+      el("button", { type: "button", class: "disclosure", "aria-expanded": String(open), "data-fid": `${tid}|open`,
+        "aria-label": `${open ? "Hide" : "Show"} the ${t.blocks.length} entries of ${t.key}`, onclick: () => {
+          if (state.expanded.has(tid)) state.expanded.delete(tid); else state.expanded.add(tid);
+          render();
+        } }, chevron()),
+      el("span", { class: "name" }, el("span", { class: "key mono", text: label }),
+        el("span", { class: "title", text: noTask ? `${t.client} · no task` : t.title }),
+        el("span", { class: "sub-line", text: `${t.blocks.length} ${t.blocks.length === 1 ? "entry" : "entries"}` })))),
+    el("td", { class: "c-comment" }, el("input", { type: "text", value: comment ?? "", placeholder: comment == null ? "Different per entry" : null,
+      "data-fid": `${tid}|comment`, "aria-label": `Comment for every entry of ${t.key}`, disabled: lockedAll,
+      onchange: (ev) => editField(d, t, editable, "comment", ev.target), onkeydown: escRevert }), fieldError(`${tid}|comment`)),
+    el("td", { class: "c-rm" }, el("input", { type: "text", inputmode: "numeric", value: rm ?? "", placeholder: rm == null ? "mixed" : "–",
+      "data-fid": `${tid}|rm`, "aria-label": `Redmine ID for every entry of ${t.key}`, disabled: lockedAll,
+      onchange: (ev) => editField(d, t, editable, "redmine_id", ev.target), onkeydown: escRevert }), fieldError(`${tid}|redmine_id`)),
+    el("td", { class: "num" }, `${hm(t.tracked_seconds)} → ${hm(t.rounded_seconds)}`,
+      el("span", { class: "sub-line", text: `${signed(t.rounded_seconds - t.tracked_seconds)} rounding` })),
+    el("td", {}, summary),
+    el("td", {}));
+  const out = [row];
+  if (open) t.blocks.forEach((b, i) => out.push(...blockRows(d, t, b, i)));
+  return out;
+}
+
+function dayCard(d) {
+  const tasks = d.tasks.filter(visibleTask);
+  if (!tasks.length) return null;
+  const tot = d.log_seconds != null && !d._dirty ? d : dayTotals(d);
+  const ids = tasks.flatMap((t) => t.blocks.filter(isSelectable).map((b) => b.external_id));
+  const nSel = ids.filter((id) => state.selected.has(id)).length;
+  const isToday = d.day === state.data.today;
+  const blocked = tasks.every((t) => t.blocks.every((b) => b.status === "blocked" || b.flowapp_id != null));
+  const title = dayLabel.format(parseDay(d.day));
+  const h = el("h2", {}, el("input", { type: "checkbox", checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
+    disabled: !ids.length || state.sending, "data-fid": `${d.day}|sel`, "aria-label": `Send every sendable entry of ${title}`,
+    onchange: (ev) => toggle(ids, ev.target.checked) }), title);
+  const totals = el("div", { class: "totals tnum" },
+    "log ", el("b", { text: hm(tot.log_seconds) }), " · spent ", el("b", { text: hm(tot.spent_seconds) }),
+    " · tracker ", el("b", { text: hm(tot.tracked_seconds) }), " → ", el("b", { text: hm(tot.rounded_seconds) }),
+    ` (${signed(tot.rounded_seconds - tot.tracked_seconds)})`);
+  const card = el("section", { class: "card", "aria-label": title }, el("div", { class: "day-head" }, h, totals));
+  if (isToday) card.append(el("p", { class: "day-note", text: "Today is still running: its entries may still grow, so they are not selected by default." }));
+  else if (blocked && tasks.some((t) => t.blocks.some((b) => b.status === "blocked")))
+    card.append(el("p", { class: "day-note", text: "Older than 62 days: FlowApp no longer accepts new entries for this day." }));
+  const tbody = el("tbody");
+  for (const t of tasks) tbody.append(...taskRows(d, t));
+  card.append(el("div", { class: "scroll" }, el("table", {},
+    el("colgroup", {}, ...["sel", "what", "comment", "rm", "num", "status", "act"].map((c) => el("col", { class: `c-${c}` }))),
+    el("thead", {}, el("tr", {},
+      el("th", { class: "sel" }, el("span", { class: "sr-only", text: "Send" })),
+      el("th", { text: "Task / entry" }), el("th", { text: "Comment" }), el("th", { text: "Redmine ID" }),
+      el("th", { class: "num", text: "Tracker → FlowApp" }), el("th", { text: "Status" }),
+      el("th", {}, el("span", { class: "sr-only", text: "Actions" })))),
+    tbody)));
+  return card;
+}
+
+// Rebuilds the list, keeping the focused control (and what was typed into it) across the rebuild.
+function render() {
+  const a = document.activeElement, fid = a?.dataset?.fid;
+  const dirty = fid && a.tagName === "INPUT" && a.type === "text" && a.value !== a.defaultValue ? a.value : null;
+  const sel = fid && a.tagName === "INPUT" && a.type === "text" ? [a.selectionStart, a.selectionEnd] : null;
+  syncSelection();
+  const days = $("days");
+  days.replaceChildren();
+  const cards = (state.data?.days || []).map(dayCard).filter(Boolean);
+  if (!cards.length) days.append(el("div", { class: "card empty", text: state.data ? "No time to export in this range." : "Loading…" }));
+  else days.append(...cards);
+  renderClients();
+  renderSummary();
+  $("expand-all").textContent = allExpanded() ? "Collapse all" : "Expand all";
+  if (fid) {
+    const all = [...document.querySelectorAll("[data-fid]")];
+    let n = all.find((x) => x.dataset.fid === fid);
+    if (!n) {
+      // The control went away with the action (Merge, Skip, Send again): stay on the same entry,
+      // its next action first, so the keyboard does not fall back to the top of the page.
+      const owner = fid.slice(0, fid.lastIndexOf("|") + 1);
+      const mine = all.filter((x) => x.dataset.fid.startsWith(owner) && !x.disabled);
+      n = mine.find((x) => x.tagName === "BUTTON") || mine[0] || null;
+    }
+    if (n) {
+      if (dirty != null) n.value = dirty;
+      n.focus({ preventScroll: true });
+      if (sel && n.setSelectionRange) try { n.setSelectionRange(...sel); } catch (e) {}
+    }
+  }
+}
+
+function renderClients() {
+  const sel = $("client"), clients = new Set((state.data?.days || []).flatMap((d) => d.tasks.map((t) => t.client)));
+  if (state.client) clients.add(state.client);
+  const want = ["", ...[...clients].sort()];
+  if ([...sel.options].map((o) => o.value).join() !== want.join()) {
+    sel.replaceChildren(...want.map((c) => el("option", { value: c, text: c || "All clients" })));
+  }
+  sel.value = state.client;
+}
+
+function selectedBlocks() {
+  return allBlocks().filter(({ b }) => state.selected.has(b.external_id) && isSelectable(b));
+}
+
+function renderSummary() {
+  const box = $("summary");
+  box.replaceChildren();
+  if (state.sending) return;
+  const sel = selectedBlocks();
+  const tasks = new Set(sel.map(({ d, t }) => `${d.day}|${t.key}`));
+  const posts = sel.filter(({ b }) => method(b) === "POST").length;
+  const tracked = sel.reduce((s, { b }) => s + trackedOf(b), 0), rounded = sel.reduce((s, { b }) => s + roundedOf(b), 0);
+  const missing = sel.filter(({ b }) => needsReason(b) && !reasonOf(b));
+  if (!sel.length) box.append(el("span", { class: "line", text: "Nothing selected" }),
+    el("span", { class: "hint", text: "Tick the entries to send. Today's entries and sent ones are not ticked by default." }));
+  else {
+    box.append(el("span", { class: "line tnum" },
+      el("b", { text: `${sel.length} ${sel.length === 1 ? "entry" : "entries"}` }),
+      ` in ${tasks.size} ${tasks.size === 1 ? "task" : "tasks"} (${posts} POST, ${sel.length - posts} PATCH) · `,
+      `tracker ${hm(tracked)} → `, el("b", { text: hm(rounded) }), ` (${signed(rounded - tracked)} rounding)`));
+    if (missing.length) box.append(el("span", { class: "need",
+      text: `${missing.length} ${missing.length === 1 ? "entry needs" : "entries need"} a reason for change before sending.` }));
+  }
+  $("send").disabled = !sel.length || missing.length > 0 || state.sending;
+  $("send").textContent = sel.length ? `Send ${sel.length}…` : "Send…";
+  $("skip-selected").disabled = !sel.some(({ b }) => b.flowapp_id == null) || state.sending;
+}
+
+const allExpanded = () => (state.data?.days || []).every((d) => d.tasks.filter(visibleTask).every((t) => state.expanded.has(`${d.day}|${t.key}`)));
+
+// ---------------------------------------------------------------- edits
+
+function escRevert(ev) {
+  if (ev.key === "Escape" && ev.target.value !== ev.target.defaultValue) { ev.target.value = ev.target.defaultValue; ev.preventDefault(); }
+}
+
+function toggle(ids, on) {
+  for (const id of ids) if (on) state.selected.add(id); else state.selected.delete(id);
+  render();
+}
+
+let savedTimer;
+function saved(text) {
+  clearTimeout(savedTimer);
+  $("saved").textContent = text;
+  savedTimer = setTimeout(() => { $("saved").textContent = ""; }, 4000);
+}
+
+function replaceTask(d, task, dayFromServer) {
+  const i = d.tasks.findIndex((x) => x.key === task.key);
+  if (i >= 0) d.tasks[i] = task;
+  if (dayFromServer) Object.assign(d, dayFromServer, { tasks: d.tasks, _dirty: false });
+  else d._dirty = true;   // the response carries the task only: the header is recounted here
+}
+
+// Every edit is saved at once as a draft, so it survives a reload.
+async function draft(d, t, b, fields, message, errKey) {
+  const body = { day: d.day, external_id: b.external_id, ...fields };
+  try {
+    $("saved").textContent = "Saving…";
+    const res = await post("/api/flowapp/draft", body);
+    if (errKey) state.fieldErrors.delete(errKey);
+    if (res.task) replaceTask(d, res.task, res.day);
+    render();
+    saved(message || "Saved");
+    return true;
+  } catch (e) {
+    $("saved").textContent = "";
+    if (errKey) { state.fieldErrors.set(errKey, e.message); render(); }
+    else showBanner(`Not saved: ${e.message}`);
+    return false;
+  }
+}
+
+async function editTime(d, t, b, which, input) {
+  const v = normClock(input.value), key = `${b.external_id}|time`;
+  if (!v) { state.fieldErrors.set(key, "Use HH:MM, e.g. 09:15."); render(); return; }
+  input.value = v;
+  const start = which === "start" ? v : clock(b.start, d.day), stop = which === "stop" ? v : clock(b.stop, d.day);
+  if (stop <= start) { state.fieldErrors.set(key, "The stop must come after the start."); render(); return; }
+  const fields = { action: "edit" };
+  fields[which] = toIso(d.day, v);
+  await draft(d, t, b, fields, `Time saved: ${start}–${stop}`, key);
+}
+
+async function editField(d, t, blocks, field, input) {
+  const value = input.value.trim();
+  const scope = blocks.length === 1 && blocks[0] !== undefined && input.dataset.fid.startsWith(blocks[0].external_id) ? blocks[0].external_id : `${d.day}|${t.key}`;
+  const key = `${scope}|${field}`;
+  if (field === "comment" && !value) { state.fieldErrors.set(key, "A comment cannot be empty."); render(); return; }
+  if (field === "redmine_id" && value && !/^\d+$/.test(value)) { state.fieldErrors.set(key, "A Redmine ID is a number."); render(); return; }
+  state.fieldErrors.delete(key);
+  const send = field === "redmine_id" ? (value || null) : value;
+  // A task-level edit is one draft per entry: the contract keys drafts by entry.
+  let ok = true, n = 0;
+  for (const b of blocks) {
+    if ((b[field] ?? null) === send) continue;
+    const fresh = d.tasks.find((x) => x.key === t.key)?.blocks.find((x) => x.external_id === b.external_id) || b;
+    ok = await draft(d, t, fresh, { action: "edit", [field]: send }, null, key) && ok;
+    n++;
+    if (!ok) break;
+  }
+  if (ok && n) saved(`${field === "comment" ? "Comment" : "Redmine ID"} saved${n > 1 ? ` on ${n} entries` : ""}`);
+  else if (ok) render();
+}
+
+async function editReason(d, t, b, input) {
+  const v = input.value.trim();
+  state.reasons.set(b.external_id, v);
+  if (!v) { render(); return; }
+  await draft(d, t, b, { action: "edit", export_comment: v }, "Reason saved");
+}
+
+async function skipSelected() {
+  const list = selectedBlocks().filter(({ b }) => b.flowapp_id == null);
+  for (const { d, t, b } of list) if (!await draft(d, t, b, { action: "skip" }, null)) return;
+  saved(`${list.length} ${list.length === 1 ? "entry" : "entries"} skipped`);
+}
+
+// ---------------------------------------------------------------- sending
+
+function openConfirm() {
+  const sel = selectedBlocks();
+  if (!sel.length) return;
+  const posts = sel.filter(({ b }) => method(b) === "POST").length, patches = sel.length - posts;
+  const tracked = sel.reduce((s, { b }) => s + trackedOf(b), 0), rounded = sel.reduce((s, { b }) => s + roundedOf(b), 0);
+  const days = new Set(sel.map(({ d }) => d.day)).size;
+  const today = sel.filter(({ b }) => b.status === "today").length;
+  $("confirm-title").textContent = `Send ${sel.length} ${sel.length === 1 ? "entry" : "entries"} to FlowApp?`;
+  const li = (strong, rest) => el("li", {}, el("b", { text: strong }), rest);
+  const items = [];
+  if (posts) items.push(li(`${posts} new`, ` ${posts === 1 ? "entry" : "entries"} (POST)`));
+  if (patches) items.push(li(`${patches} ${patches === 1 ? "correction" : "corrections"}`, " to entries already in FlowApp (PATCH)"));
+  items.push(li(hm(rounded), ` in FlowApp from ${hm(tracked)} tracked (${signed(rounded - tracked)} rounding), over ${days} ${days === 1 ? "day" : "days"}`));
+  if (today) items.push(li(`${today} from today`, ", which may still grow"));
+  $("confirm-list").replaceChildren(...items);
+  const minutes = Math.ceil(sel.length * 2.1 / 60);
+  $("confirm-note").textContent = `Entries go one by one, about 30 a minute${sel.length > 10 ? `: roughly ${minutes} min` : ""}. You can stop after any entry.`;
+  $("confirm-send").textContent = `Send ${sel.length}`;
+  $("confirm").showModal();
+}
+
+async function startSend() {
+  const ids = selectedBlocks().map(({ b }) => b.external_id);
+  if (!ids.length) return;
+  hideFatal();
+  try {
+    const res = await post("/api/flowapp/send", { external_ids: ids });
+    follow(res.job_id, ids.length);
+  } catch (e) {
+    if (e.status === 409 && e.data?.job_id) { follow(e.data.job_id, ids.length); return; }
+    showBanner(e.status === 409 ? "Another send is already running. Wait for it to finish, then send again." : `Not sent: ${e.message}`);
+  }
+}
+
+function setSending(on) {
+  state.sending = on;
+  $("progress").hidden = !on;
+  $("send").hidden = on; $("skip-selected").hidden = on; $("cancel-job").hidden = !on;
+  $("summary").hidden = on;
+  $("filters").inert = on;
+  $("days").inert = on;
+  if (on) { $("cancel-job").disabled = false; $("cancel-job").textContent = "Cancel"; }
+}
+
+function follow(id, total) {
+  state.job = { id, total };
+  try { sessionStorage.setItem(JOB_KEY, id); } catch (e) {}
+  const wasFocused = document.activeElement;
+  setSending(true);
+  showProgress({ total, done: 0, failed: 0 });
+  if (!wasFocused || wasFocused === document.body || wasFocused.closest?.("dialog") || wasFocused.hidden) $("cancel-job").focus();
+  poll();
+}
+
+function showProgress(j) {
+  const total = j.total || 0, processed = Math.min(total, (j.done || 0) + (j.failed || 0));
+  $("progress-text").textContent = `Sending ${processed}/${total}${j.failed ? ` · ${j.failed} failed` : ""}. Editing is paused until it ends.`;
+  $("progress-fill").style.transform = `scaleX(${total ? processed / total : 0})`;
+  const bar = $("progress-bar");
+  bar.setAttribute("aria-valuemax", String(total)); bar.setAttribute("aria-valuenow", String(processed));
+}
+
+let pollTimer;
+async function poll() {
+  clearTimeout(pollTimer);
+  const id = state.job?.id;
+  if (!id) return;
+  let j;
+  try { j = await getJson(`/api/flowapp/job?id=${encodeURIComponent(id)}`); }
+  catch (e) {
+    // The job is gone (dashboard restarted): its rows say what happened.
+    endJob(null, `The send status is no longer available (${e.message}). Rows below show what reached FlowApp.`);
+    return;
+  }
+  showProgress(j);
+  if (j.running) { pollTimer = setTimeout(poll, 1000); return; }
+  endJob(j);
+}
+
+async function endJob(j, note) {
+  clearTimeout(pollTimer);
+  state.job = null;
+  try { sessionStorage.removeItem(JOB_KEY); } catch (e) {}
+  const focusBack = document.activeElement === $("cancel-job");
+  setSending(false);
+  state.jobErrors = new Map((j?.errors || []).map((e) => [e.external_id, errorText(e)]));
+  if (j?.fatal) showFatal(j.fatal, j);
+  else if (j) {
+    const failed = j.failed ? ` ${j.failed} failed: see the rows marked error.` : "";
+    showBanner(j.cancelled ? `Stopped: ${j.done} of ${j.total} sent.${failed}` : `Sent ${j.done} of ${j.total}.${failed}`, !j.failed);
+  } else if (note) showBanner(note);
+  await load();
+  if (focusBack) $("send").focus();
+}
+
+async function cancelJob() {
+  if (!state.job) return;
+  $("cancel-job").disabled = true; $("cancel-job").textContent = "Stopping after this entry…";
+  try { await post("/api/flowapp/job/cancel", { id: state.job.id }); }
+  catch (e) { showBanner(`Could not stop: ${e.message}`); $("cancel-job").disabled = false; $("cancel-job").textContent = "Cancel"; }
+}
+
+// ---------------------------------------------------------------- banners
+
+function showBanner(text, ok = false) {
+  $("banner-msg").textContent = text;
+  $("banner").classList.toggle("ok", ok);
+  $("banner").hidden = !text;
+}
+function showFatal(f, j) {
+  const head = j ? `FlowApp stopped the send after ${j.done} of ${j.total}.` : "FlowApp refused the request.";
+  $("fatal-msg").replaceChildren(el("strong", { text: head }),
+    el("span", { text: f.message || "" }), " ", el("span", { class: "mono soft", text: f.code ? `(${f.code})` : "" }));
+  $("fatal").hidden = false;
+  $("fatal").scrollIntoView({ block: "nearest" });
+}
+function hideFatal() { $("fatal").hidden = true; }
+
+// ---------------------------------------------------------------- loading
+
+function presetRange(name) {
+  const now = new Date(), dow = (now.getDay() + 6) % 7;   // Monday = 0
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow);
+  if (name === "this-week") return [monday, now];
+  return [new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 7),
+          new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 1)];
+}
+function applyPreset(name) {
+  const [f, t] = presetRange(name);
+  state.preset = name; state.from = iso(f); state.to = iso(t);
+}
+function markRange() {
+  $("from").value = state.from; $("to").value = state.to;
+  const p = ["last-week", "this-week"].find((n) => presetRange(n).map(iso).join() === `${state.from},${state.to}`) || null;
+  state.preset = p;
+  for (const b of document.querySelectorAll("[data-preset]")) b.setAttribute("aria-pressed", String(b.dataset.preset === p));
+  $("billable").checked = state.billable;
+}
+function pushUrl() {
+  const q = new URLSearchParams();
+  if (state.preset && state.preset !== "last-week") q.set("preset", state.preset);
+  else if (!state.preset) { q.set("from", state.from); q.set("to", state.to); }
+  if (state.client) q.set("client", state.client);
+  if (!state.billable) q.set("billable", "0");
+  history.replaceState(null, "", q.toString() ? `?${q}` : location.pathname);
+}
+
+let loadSeq = 0;
+async function load() {
+  markRange(); pushUrl();
+  const seq = ++loadSeq;
+  $("days").classList.add("loading");
+  try {
+    const q = new URLSearchParams({ from: state.from, to: state.to, billable: state.billable ? "1" : "0" });
+    const data = await getJson(`/api/flowapp/preview?${q}`);
+    if (seq !== loadSeq) return;
+    state.data = data;
+    if (data.remote_ok === false) showBanner("FlowApp could not be reached: entries deleted or changed there are not shown. Sending still checks each entry.");
+    else if (!$("banner").classList.contains("ok") && $("banner-msg").textContent.startsWith("FlowApp could not")) showBanner("");
+    render();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    showBanner(`Could not load the entries: ${e.message}`);
+    state.data = state.data || { days: [] };
+    render();
+  } finally {
+    if (seq === loadSeq) $("days").classList.remove("loading");
+  }
+}
+
+const PROBLEM = {
+  no_url: "FlowApp export is off: add a [flowapp] section with url to config.toml.",
+  no_token: "No FlowApp token found: set FLOWAPP_TOKEN, put it in the flowapp-token file (mode 600) or, on macOS, in the Keychain as flowapp-api-token.",
+  token_file_mode: "The flowapp-token file was not read: its mode must be 600 (chmod 600 flowapp-token).",
+  unauthorized: "FlowApp refused the token: it may have expired or been revoked.",
+  unreachable: "FlowApp could not be reached right now.",
+};
+
+function renderDisabled(s) {
+  $("filters").hidden = true; $("bar").hidden = true;
+  const card = el("section", { class: "card disabled-card" }, el("h2", { text: "FlowApp export is not available" }),
+    el("p", { text: PROBLEM[s.problem] || "FlowApp export is not configured." }));
+  if (s.message) card.append(el("p", { text: s.message }));
+  card.append(el("p", {}, "See the FlowApp export section of the README for setup. ",
+    el("code", { text: "[flowapp] url = \"…/api/v1\"" })));
+  $("days").replaceChildren(card);
+}
+
+async function init() {
+  try { state.status = await getJson("/api/flowapp/status"); }
+  catch (e) { state.status = null; showBanner(`Could not read the FlowApp status: ${e.message}`); }
+  renderAccount();
+  if (state.status && !state.status.enabled) { renderDisabled(state.status); return; }
+  if (state.status?.problem) showBanner(PROBLEM[state.status.problem] || state.status.message || state.status.problem);
+  await load();
+  let job = null;
+  try { job = sessionStorage.getItem(JOB_KEY); } catch (e) {}
+  if (job) { state.job = { id: job, total: 0 }; setSending(true); showProgress({ total: 0 }); poll(); }   // a send started before a reload
+}
+
+// ---------------------------------------------------------------- wiring
+
+for (const b of document.querySelectorAll("[data-preset]")) b.addEventListener("click", () => { applyPreset(b.dataset.preset); load(); });
+for (const id of ["from", "to"]) $(id).addEventListener("change", () => {
+  const f = $("from").value, t = $("to").value;
+  if (!validDay(f) || !validDay(t)) return;
+  state.from = f <= t ? f : t; state.to = f <= t ? t : f; state.preset = null;
+  load();
+});
+$("client").addEventListener("change", () => { state.client = $("client").value; pushUrl(); render(); });
+$("billable").addEventListener("change", () => { state.billable = $("billable").checked; load(); });
+$("reload").addEventListener("click", () => load());
+$("expand-all").addEventListener("click", () => {
+  const open = !allExpanded();
+  for (const d of state.data?.days || []) for (const t of d.tasks.filter(visibleTask)) {
+    const id = `${d.day}|${t.key}`;
+    if (open) state.expanded.add(id); else state.expanded.delete(id);
+  }
+  render();
+});
+$("send").addEventListener("click", openConfirm);
+$("skip-selected").addEventListener("click", skipSelected);
+$("cancel-job").addEventListener("click", cancelJob);
+$("confirm").addEventListener("close", () => { if ($("confirm").returnValue === "send") startSend(); else $("send").focus(); });
+$("fatal-close").addEventListener("click", () => { hideFatal(); $("send").focus(); });
+$("banner-close").addEventListener("click", () => { showBanner(""); });
+
+// The footer's height, kept for scroll-padding: it grows when its text wraps or a send is running.
+if ("ResizeObserver" in window) new ResizeObserver(([e]) => {
+  document.documentElement.style.setProperty("--bar-h", `${Math.ceil(e.target.getBoundingClientRect().height)}px`);
+}).observe($("bar"));
+
+// The theme switch: auto follows the system; light and dark are kept in this browser, for every page.
+const THEME_KEY = "cc-statusline-theme";
+function applyTheme(choice) {
+  if (choice === "light" || choice === "dark") document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  const current = document.documentElement.dataset.theme || "auto";
+  for (const b of document.querySelectorAll("[data-theme-choice]")) b.setAttribute("aria-pressed", String(b.dataset.themeChoice === current));
+}
+for (const b of document.querySelectorAll("[data-theme-choice]")) b.addEventListener("click", () => {
+  const choice = b.dataset.themeChoice;
+  try { if (choice === "auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, choice); } catch (e) {}
+  applyTheme(choice);
+});
+window.addEventListener("storage", (ev) => { if (ev.key === THEME_KEY) applyTheme(ev.newValue); });
+applyTheme(document.documentElement.dataset.theme);
+
+const initial = new URLSearchParams(location.search);
+if (validDay(initial.get("from")) && validDay(initial.get("to"))) { state.from = initial.get("from"); state.to = initial.get("to"); state.preset = null; }
+else applyPreset(initial.get("preset") === "this-week" ? "this-week" : "last-week");
+state.client = initial.get("client") || "";
+state.billable = initial.get("billable") !== "0";
+render();
+init();
+</script>
+</body>
+</html>
