@@ -10,8 +10,8 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 7              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves;
-                                # 6: kept task time; 7: assignments.agent_id
+SCHEMA_VERSION = 8              # 2: assignments.branch; 3: task details; 4: work list; 5: task moves;
+                                # 6: kept task time; 7: assignments.agent_id; 8: flowapp_exports
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -153,6 +153,36 @@ CREATE TABLE IF NOT EXISTS task_time_state (
     null_dirs   TEXT NOT NULL,         -- JSON list of sessions that had no project_dir then
     computed_at REAL NOT NULL
 );
+
+-- FlowApp entries a person edited, skipped or sent (flowapp.py). Untouched
+-- blocks are not stored: they are recomputed from the events every time.
+CREATE TABLE IF NOT EXISTS flowapp_exports (
+    external_id     TEXT PRIMARY KEY,   -- cc:<task or client/project>:<epoch of the block's first start>
+    task            TEXT NOT NULL,      -- the block's key: a task, or client/project without one
+    client          TEXT,
+    day             TEXT NOT NULL,      -- local date
+    orig_start      REAL NOT NULL,      -- the proposal when first touched
+    orig_stop       REAL NOT NULL,
+    tracked_start   REAL,
+    tracked_stop    REAL,
+    active_seconds  REAL,
+    start           REAL NOT NULL,      -- what is to be sent
+    stop            REAL NOT NULL,
+    comment         TEXT,
+    redmine_id      TEXT,
+    status          TEXT NOT NULL,      -- draft, skipped, sent, changed, error, merged
+    flowapp_id      TEXT,               -- set once FlowApp has the entry
+    sent_start      REAL,               -- what FlowApp has, as it answered
+    sent_stop       REAL,
+    sent_comment    TEXT,
+    sent_redmine_id TEXT,
+    error           TEXT,
+    export_comment  TEXT,               -- reason for changing an entry already exported to Redmine
+    merged_into     TEXT,               -- status merged: the block this one was merged into
+    updated_at      REAL,
+    sent_at         REAL
+);
+CREATE INDEX IF NOT EXISTS flowapp_exports_day ON flowapp_exports(day);
 """
 
 EVENT_FIELDS = ("ts", "session_id", "kind", "cwd", "project", "branch", "agent_id",
