@@ -414,7 +414,7 @@ is sent without that click. The page and its link stay hidden until it is set up
 
 ```toml
 [flowapp]
-url = "https://flowapp.movecloser.dev/api/v1"   # required: without it the export is off
+url = "https://flowapp.example.com/api/v1"     # required: your FlowApp instance's API address; without it the export is off
 round_minutes = 5                                # each entry rounded up to 5, 10 or 15 minutes
 gap_minutes = 15                                 # breaks up to this long inside one task are glued
 ```
