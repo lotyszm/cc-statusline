@@ -247,7 +247,8 @@ PROBLEMS = {
     "unreachable": "FlowApp could not be reached; proposals are shown without its current entries.",
 }
 _flowapp_lock = threading.Lock()
-_flowapp_cache = {}             # "token": (at, token, problem); ("me", url): (at, answer or ApiError)
+_flowapp_cache = {}             # "token": (at, token, problem); ("me", url): (at, answer or ApiError);
+                                # ("entries", url): (first, last, FlowApp's entries of those days)
 _jobs = {}                      # job id -> SendJob, the latest few
 _current_job = None
 load_token = flowapp.load_token         # replaced in tests: they must never reach the real Keychain
@@ -343,11 +344,31 @@ def flowapp_status(cfg):
 
 
 def _remote(client, first, last):
-    """FlowApp's entries around the days (a day's UTC edges differ from local), or None."""
+    """FlowApp's entries around the days (a day's UTC edges differ from local), or None.
+
+    What came back is kept for the drafts that follow (see _known_remote).
+    """
+    lo, hi = first - timedelta(days=1), last + timedelta(days=1)
     try:
-        return client.entries(first - timedelta(days=1), last + timedelta(days=1))
+        entries = client.entries(lo, hi)
     except flowapp.ApiError:
         return None
+    with _flowapp_lock:
+        _flowapp_cache[("entries", client.url)] = (lo, hi, entries)
+    return entries
+
+
+def _known_remote(client, first, last):
+    """FlowApp's entries for the days as the last preview found them, or None: nothing is asked.
+
+    A draft changes only this tool's database, so it does not wait on FlowApp; the
+    preview and the send ask it again. Forgotten when a send starts, as the job adds entries.
+    """
+    with _flowapp_lock:
+        hit = _flowapp_cache.get(("entries", client.url))
+    if hit and hit[0] <= first - timedelta(days=1) and last + timedelta(days=1) <= hit[1]:
+        return hit[2]
+    return None
 
 
 def _days(query, now):
@@ -368,10 +389,13 @@ def _days(query, now):
     return first, last, today
 
 
-def _view(conn, cfg, client, first, last, today, now, billable_only=True):
-    """(reconciled entries, FlowApp reached) for the days first..last."""
+def _view(conn, cfg, client, first, last, today, now, billable_only=True, ask=True):
+    """(blocks, reconciled entries, FlowApp's entries known) for the days first..last.
+
+    With ask=False FlowApp is not asked: what the last preview learnt is used.
+    """
     blocks = flowapp.collect_blocks(conn, cfg, first, last, billable_only)
-    remote = _remote(client, first, last)
+    remote = _remote(client, first, last) if ask else _known_remote(client, first, last)
     items = flowapp.reconcile(blocks, flowapp.load_exports(conn, first, last), remote, today, now)
     return blocks, items, remote is not None
 
@@ -402,7 +426,9 @@ def flowapp_draft(conn, cfg, client, body, now=None):
     except ValueError:
         raise ValueError("day is a date, YYYY-MM-DD") from None
     today = datetime.fromtimestamp(now).date()
-    blocks, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False)
+    # Only sending a deleted entry again needs FlowApp's word that it is gone.
+    ask = action == "resend"
+    blocks, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False, ask=ask)
     it = next((x for x in items if x["external_id"] == ext), None)
     if it is None:
         raise LookupError(f"no entry {ext} on {day}")
@@ -426,7 +452,7 @@ def flowapp_draft(conn, cfg, client, body, now=None):
     elif action == "resend" and it["status"] != "deleted_remote":
         raise ValueError("only an entry deleted in FlowApp can be sent again")
     flowapp.save_draft(conn, proposal, action, fields, now)
-    _, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False)
+    _, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False, ask=False)
     mine = [x for x in items if x["key"] == it["key"] and x["client"] == it["client"]]
     return {"ok": True, "task": flowapp.task_json(it["key"], it["client"], flowapp.titles_of(conn).get(it["key"]),
                                                   mine)}
@@ -470,6 +496,7 @@ def flowapp_send(conn, cfg, client, body, now=None):
     with _flowapp_lock:
         if _current_job is not None and _current_job.snapshot()["running"]:
             return 409, {"error": "a send is already running", "job_id": _current_job.id}
+        _flowapp_cache.pop(("entries", client.url), None)
         _current_job = job
         _jobs[job.id] = job
         for old in list(_jobs)[:-10]:

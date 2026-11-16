@@ -548,6 +548,39 @@ class FlowappEndpointTest(ServedTestCase):
         status, _ = self.post("/api/flowapp/draft", {"day": self.day, "external_id": "cc:nope:1", "action": "skip"})
         self.assertEqual(status, 404)
 
+    def entries_asked(self):
+        return sum(1 for r in self.fake.requests if r["method"] == "GET" and "/tracker/entries" in r["path"])
+
+    def test_drafts_do_not_ask_flowapp(self):
+        conn = db.connect()
+        t1 = local_ts(f"{self.day} 13:00")
+        for off, kind in ((0, "prompt"), (600, "stop")):     # a second block of the task that day
+            db.record_event(conn, ts=t1 + off, session_id="s3cccccc", kind=kind, cwd=ACME, project=ACME,
+                            branch="feature/12345/x")
+            db.touch_session(conn, "s3cccccc", t1 + off, project_dir=ACME)
+        conn.close()
+        self.preview()
+        asked = self.entries_asked()
+        for body in ({"action": "edit", "comment": "Pricing fix"}, {"action": "skip"}, {"action": "unskip"},
+                     {"action": "merge_next"}):
+            with self.subTest(action=body["action"]):
+                status, answer = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, **body})
+                self.assertEqual(status, 200, answer)
+        self.assertEqual(self.entries_asked() - asked, 0)
+        self.assertEqual([b["status"] for b in answer["task"]["blocks"]], ["draft"])
+
+    def test_a_draft_keeps_what_the_preview_learnt_from_flowapp(self):
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.wait_for(body["job_id"])
+        self.fake.entries = [{**e, "exportStatus": "exported"} for e in self.fake.stored.values()]
+        self.preview()
+        asked = self.entries_asked()
+        status, answer = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "edit",
+                                                          "comment": "Pricing fix"})
+        block = answer["task"]["blocks"][0]
+        self.assertEqual((status, block["status"], block["flags"]), (200, "changed", ["exported"]))
+        self.assertEqual(self.entries_asked() - asked, 0)
+
     def test_resend_only_for_entries_deleted_in_flowapp(self):
         status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "resend"})
         self.assertEqual(status, 400)
