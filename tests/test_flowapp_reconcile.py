@@ -238,6 +238,13 @@ class ReconcileTest(IsolatedTestCase):
         with self.assertRaises(ValueError):
             flowapp.save_draft(self.conn, first, "merge_next", {"next": second}, NOW)
 
+    def test_edited_times_are_whole_minutes(self):
+        b = build([span(DAY, "09:00", "09:34")])[0]
+        flowapp.save_draft(self.conn, b, "edit", {"start": local_ts(f"{DAY} 09:01") + 30,
+                                                  "stop": local_ts(f"{DAY} 09:40") + 1}, NOW)
+        row = self.exports()[b.external_id]
+        self.assertEqual((row["start"], row["stop"]), (local_ts(f"{DAY} 09:01"), local_ts(f"{DAY} 09:41")))
+
     def test_invalid_edits_are_refused(self):
         b = build([span(DAY, "09:00", "09:34")])[0]
         for fields in ({"stop": b.start}, {"stop": b.start + 25 * 3600},

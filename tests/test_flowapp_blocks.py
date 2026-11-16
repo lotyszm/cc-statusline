@@ -103,6 +103,14 @@ class BuildBlocksTest(IsolatedTestCase):
         b = build([span(d, "09:00", "10:00"), span(d, "09:00", "10:00", key(task="d24:cms#118"))])
         self.assertEqual(sorted((x.key, minutes(x)) for x in b), [("d24:cms#118", 60), ("d24:cms#120", 60)])
 
+    def test_an_entry_starts_on_a_whole_minute(self):
+        d = "2026-11-10"
+        b = build([span(d, "07:34:05", "07:39:03")])[0]
+        # The start is cut to the minute and the stop rounded up from there: 5:03 makes ten minutes.
+        self.assertEqual((b.start, b.stop), (local_ts(f"{d} 07:34"), local_ts(f"{d} 07:44")))
+        self.assertEqual(b.tracked_start, local_ts(f"{d} 07:34") + 5)
+        self.assertEqual(flowapp.iso(b.start)[11:19], "07:34:00")
+
     def test_external_id_is_task_and_tracked_start(self):
         d = "2026-11-10"
         b = build([span(d, "09:12:30", "09:30")])[0]

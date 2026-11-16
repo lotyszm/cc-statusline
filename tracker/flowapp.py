@@ -90,7 +90,7 @@ class Block:
     """One proposed FlowApp entry: a task's (or a project's) time on one local day.
 
     `tracked_start`/`tracked_stop` span the glued work, `start`/`stop` are what
-    is sent: the start cut to a whole second, the stop rounded up to the step.
+    is sent: the start cut to a whole minute, the stop rounded up from it to the step.
     `active_seconds` is the work itself, without the glued breaks.
     """
     key: str
@@ -154,6 +154,12 @@ def _glue(spans, gap_s):
     return out
 
 
+def _minute(ts, up=False):
+    """ts cut to a whole minute (up: raised to one). Time zones differ by whole minutes,
+    so this is the local minute as well."""
+    return float((math.ceil if up else math.floor)(ts / 60) * 60)
+
+
 def _round(start, stop, step_s):
     return start + math.ceil((stop - start) / step_s) * step_s if stop > start else start + step_s
 
@@ -182,7 +188,7 @@ def build_blocks(intervals, *, gap_s, step_s, titles, tickets, billable_only=Tru
         glued = _glue(spans, gap_s)
         merged = []                     # [tracked_start, tracked_stop, active, start, stop]
         for s, e, active in glued:
-            start = float(math.floor(s))
+            start = _minute(s)
             if merged and merged[-1][4] >= s:
                 last = merged[-1]
                 last[1], last[2] = max(last[1], e), last[2] + active
@@ -332,7 +338,7 @@ def save_draft(conn, block, action, fields, now):
                   "redmine_id": row["redmine_id"]}
         for name in ("start", "stop"):
             if fields.get(name) is not None:
-                values[name] = float(fields[name])
+                values[name] = _minute(float(fields[name]), up=name == "stop")
         if "comment" in fields and fields["comment"] is not None:
             values["comment"] = str(fields["comment"]).strip()
         if "redmine_id" in fields:
