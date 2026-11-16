@@ -343,7 +343,8 @@ function hm(seconds) {
 }
 const signed = (s) => (s >= 0 ? "+" : "") + hm(s);
 const span = (a, z) => (Date.parse(z) - Date.parse(a)) / 1000;
-const trackedOf = (b) => span(b.tracked_start, b.tracked_stop);
+// The tracker time an entry stands for: the sum of its blocks, so a merged entry leaves out the gap.
+const trackedOf = (b) => b.tracked_seconds ?? span(b.tracked_start, b.tracked_stop);
 const roundedOf = (b) => span(b.start, b.stop);
 // The wall-clock time the backend wrote, in the block's own offset; a stop on the next day is midnight.
 const clock = (isoStr, day) => isoStr.slice(0, 10) !== day && isoStr.slice(11, 16) === "00:00" ? "24:00" : isoStr.slice(11, 16);

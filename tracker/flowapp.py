@@ -424,12 +424,22 @@ def _union_spans(spans):
     return out
 
 
-def _item(external_id, key, client, day, start, stop, tracked_start, tracked_stop, active, comment, redmine_id,
-          status, flags=(), error=None, flowapp_id=None, export_status=None):
+def _item(external_id, key, client, day, start, stop, tracked_start, tracked_stop, tracked, active, comment,
+          redmine_id, status, flags=(), error=None, flowapp_id=None, export_status=None):
     return {"external_id": external_id, "key": key, "client": client, "day": day, "start": start, "stop": stop,
-            "tracked_start": tracked_start, "tracked_stop": tracked_stop, "active_seconds": active,
+            "tracked_start": tracked_start, "tracked_stop": tracked_stop, "tracked_seconds": tracked,
+            "active_seconds": active,
             "comment": comment, "redmine_id": redmine_id, "status": status, "flags": list(flags),
             "error": error, "flowapp_id": flowapp_id, "export_status": export_status}
+
+
+def _owner(exports, external_id):
+    """The live row a stored block counts towards: itself, or the row it was merged into."""
+    row, seen = exports.get(external_id), set()
+    while row is not None and row["status"] == "merged" and row["merged_into"] and row["external_id"] not in seen:
+        seen.add(row["external_id"])
+        row = exports.get(row["merged_into"])
+    return row if row is not None and row["status"] != "merged" else None
 
 
 def reconcile(blocks, exports, remote, today, now):
@@ -440,7 +450,8 @@ def reconcile(blocks, exports, remote, today, now):
     sent row of another task that lost that time to this one, or an unsent row
     of the same task), and is then not offered again. A proposal block that
     only runs alongside a sent entry of another task is new, flagged
-    overlaps_sent. `remote` is FlowApp's entries for the days, or None when
+    overlaps_sent. A block merged into another entry counts towards that
+    entry, whose tracked time is the sum of its blocks. `remote` is FlowApp's entries for the days, or None when
     FlowApp could not be asked: then nothing is said about the remote side.
     Times stay epochs; ordered by day, start, key.
     """
@@ -458,7 +469,9 @@ def reconcile(blocks, exports, remote, today, now):
     unclaimed = []
     for b in blocks:
         if b.external_id in exports:
-            claimed[b.external_id].append(b)
+            owner = _owner(exports, b.external_id)
+            if owner is not None:
+                claimed[owner["external_id"]].append(b)
             continue
         hits = []
         for r in sent_rows:
@@ -474,6 +487,12 @@ def reconcile(blocks, exports, remote, today, now):
         if not hits:
             hits = [r for r in unsent_rows if r["day"] == b.day and r["task"] == b.key
                     and _overlaps(b.start, b.stop, r["orig_start"], r["orig_stop"])]
+        owners = {}
+        for r in hits:
+            r = _owner(exports, r["external_id"])
+            if r is not None:
+                owners[r["external_id"]] = r
+        hits = list(owners.values())
         for r in hits:
             claimed[r["external_id"]].append(b)
         if not hits:
@@ -502,10 +521,11 @@ def reconcile(blocks, exports, remote, today, now):
         mine = claimed.get(r["external_id"], [])
         if mine:
             ts, te = min(b.tracked_start for b in mine), max(b.tracked_stop for b in mine)
+            tracked = sum(b.tracked_stop - b.tracked_start for b in mine)
             active = sum(b.active_seconds for b in mine)
         else:
             ts = te = r["tracked_start"] if r["tracked_start"] is not None else r["orig_start"]
-            active = 0.0
+            tracked = active = 0.0
         if (int(ts), int(te)) != (int(r["tracked_start"] or r["orig_start"]), int(r["tracked_stop"] or r["orig_stop"])):
             flags.append("tracker_changed")
         if r["external_id"] in moved:
@@ -528,13 +548,13 @@ def reconcile(blocks, exports, remote, today, now):
                         r["sent_redmine_id"] or "")
                 if there != ours:
                     flags.append("changed_remote")
-        out.append(_item(r["external_id"], r["task"], r["client"], r["day"], r["start"], r["stop"], ts, te, active,
+        out.append(_item(r["external_id"], r["task"], r["client"], r["day"], r["start"], r["stop"], ts, te, tracked, active,
                          r["comment"], r["redmine_id"], day_status(r["day"], status), flags, r["error"],
                          r["flowapp_id"], export_status))
 
     for b in unclaimed:
         out.append(_item(b.external_id, b.key, b.client, b.day, b.start, b.stop, b.tracked_start, b.tracked_stop,
-                         b.active_seconds, b.comment, b.redmine_id, day_status(b.day, "new")))
+                         b.tracked_stop - b.tracked_start, b.active_seconds, b.comment, b.redmine_id, day_status(b.day, "new")))
 
     sent_spans = defaultdict(list)
     for r in sent_rows:
@@ -791,7 +811,8 @@ class SendJob:
 # Entries that are, or are to be, in FlowApp: the day and task sums count these.
 COUNTED = ("new", "today", "draft", "sent", "changed", "error")
 SENDABLE = ("new", "today", "draft", "changed", "error")
-BLOCK_FIELDS = ("external_id", "day", "start", "stop", "tracked_start", "tracked_stop", "active_seconds",
+BLOCK_FIELDS = ("external_id", "day", "start", "stop", "tracked_start", "tracked_stop", "tracked_seconds",
+                "active_seconds",
                 "comment", "redmine_id", "status", "flags", "error", "flowapp_id", "export_status")
 
 
@@ -804,7 +825,7 @@ def _block_json(it):
 
 def _sums(items):
     counted = [it for it in items if it["status"] in COUNTED]
-    return (sum(it["tracked_stop"] - it["tracked_start"] for it in counted),
+    return (sum(it["tracked_seconds"] for it in counted),
             sum(it["stop"] - it["start"] for it in counted), counted)
 
 

@@ -321,7 +321,7 @@ FLOWAPP_PREVIEW_CONTRACT = {
                          "rounded_seconds": 0,
                          "blocks": [{"external_id": "cc:d24:cms#120:1762762320", "day": "2026-11-10",
                                      "start": "", "stop": "", "tracked_start": "", "tracked_stop": "",
-                                     "active_seconds": 0, "comment": "", "redmine_id": "31", "status": "new",
+                                     "tracked_seconds": 0, "active_seconds": 0, "comment": "", "redmine_id": "31", "status": "new",
                                      "flags": [], "error": None, "flowapp_id": None, "export_status": None}]}]}]}
 FLOWAPP_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "flowapp_preview.json")
 FLOWAPP_TOKEN = "flw_dashboard_test_token_123"

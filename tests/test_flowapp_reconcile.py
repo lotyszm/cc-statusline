@@ -200,6 +200,23 @@ class ReconcileTest(IsolatedTestCase):
         self.assertEqual((it["external_id"], it["status"], it["start"], it["stop"]),
                          (first.external_id, "draft", first.start, second.stop))
 
+    def test_merged_entry_counts_both_blocks_of_the_tracker(self):
+        first, second = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20")])
+        before = flowapp.days_json(self.view([first, second]), {})[0]["tracked_seconds"]
+        flowapp.save_draft(self.conn, first, "merge_next", {"next": second}, NOW)
+        (it,) = self.view([first, second])
+        self.assertEqual((it["flags"], it["tracked_seconds"], it["active_seconds"]), ([], 54 * 60, 54 * 60))
+        day = flowapp.days_json([it], {})[0]
+        self.assertEqual((before, day["tracked_seconds"]), (54 * 60, 54 * 60))
+        self.assertEqual(day["tasks"][0]["blocks"][0]["tracked_seconds"], 54 * 60)
+        # Sent, the merged entry still owns both blocks: no "tracker changed".
+        row = self.exports()[first.external_id]
+        flowapp.mark_sent(self.conn, first.external_id,
+                          {"id": "101", "startedAt": utc(row["start"]), "stoppedAt": utc(row["stop"]),
+                           "comment": row["comment"], "externalId": first.external_id}, NOW)
+        (it,) = self.view([first, second])
+        self.assertEqual((it["status"], it["flags"], it["tracked_seconds"]), ("sent", [], 54 * 60))
+
     def test_sent_blocks_cannot_be_skipped_or_merged(self):
         first, second = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20")])
         self.send(first)
