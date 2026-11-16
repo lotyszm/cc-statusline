@@ -504,6 +504,13 @@ def reconcile(blocks, exports, remote, today, now):
     proposal = defaultdict(list)            # (day, key) -> [(start, stop)]
     for b in blocks:
         proposal[(b.day, b.key)].append((b.start, b.stop))
+    # Where a stored entry's own blocks were when first stored: the gap of a merge, or
+    # time added by an edit, never held this task's tracked time, so it cannot have moved.
+    regions = defaultdict(list)             # external_id of a live row -> [(start, stop)]
+    for r in rows:
+        owner = _owner(exports, r["external_id"])
+        if owner is not None:
+            regions[owner["external_id"]].append((r["orig_start"], r["orig_stop"]))
 
     claimed = defaultdict(list)             # external_id -> [Block]
     moved = set()                           # sent rows whose time the tracker gave another task
@@ -522,7 +529,8 @@ def reconcile(blocks, exports, remote, today, now):
                 hits.append(r)
                 continue
             o0, o1 = max(b.start, r["sent_start"]), min(b.stop, r["sent_stop"])
-            if not _covered(o0, o1, proposal[(r["day"], r["task"])]):
+            parts = [(max(o0, a), min(o1, z)) for a, z in regions[r["external_id"]] if max(o0, a) < min(o1, z)]
+            if any(not _covered(p0, p1, proposal[(r["day"], r["task"])]) for p0, p1 in parts):
                 hits.append(r)
                 moved.add(r["external_id"])
         if not hits:

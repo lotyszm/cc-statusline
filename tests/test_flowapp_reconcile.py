@@ -230,6 +230,19 @@ class ReconcileTest(IsolatedTestCase):
         # With the tracker's blocks gone, the task key's client decides.
         self.assertEqual(set(flowapp.billable_exports(self.exports(), [], cfg)), {billed.external_id})
 
+    def test_other_work_in_the_gap_of_a_sent_merged_entry_is_parallel_not_moved(self):
+        first, second = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20")])
+        flowapp.save_draft(self.conn, first, "merge_next", {"next": second}, NOW)
+        row = self.exports()[first.external_id]
+        flowapp.mark_sent(self.conn, first.external_id,
+                          {"id": "101", "startedAt": utc(row["start"]), "stoppedAt": utc(row["stop"]),
+                           "comment": row["comment"], "externalId": first.external_id}, NOW)
+        (between,) = build([span(DAY, "10:00", "10:30", OTHER)])
+        items = {it["key"]: it for it in self.view([first, second, between])}
+        sent, other = items["d24:cms#120"], items["d24:cms#118"]
+        self.assertEqual((sent["status"], sent["flags"], sent["tracked_seconds"]), ("sent", [], 54 * 60))
+        self.assertEqual((other["status"], other["flags"]), ("new", ["overlaps_sent"]))
+
     def test_rounding_is_told_apart_from_edited_times(self):
         first, second, third = build([span(DAY, "09:00", "09:34"), span(DAY, "11:00", "11:20"),
                                       span(DAY, "13:00", "13:08")])
