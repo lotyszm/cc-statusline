@@ -324,7 +324,7 @@ const FLAG = {
   task_changed: ["task changed", "The tracker now counts this time for another task.", true],
   changed_remote: ["changed in FlowApp", "Someone edited this entry in FlowApp; this page will not overwrite it on its own.", true],
   exported: ["in Redmine", "Already exported to Redmine: a correction needs a reason for change.", false],
-  overlaps_sent: ["overlaps a sent entry", "This time overlaps an entry already sent for the same day.", true],
+  overlaps_sent: ["parallel to a sent entry", "Overlaps an entry already sent for another task: parallel work, sent as its own entry.", false],
 };
 
 const state = { from: null, to: null, preset: "last-week", client: "", billable: true, data: null, status: null,
@@ -350,15 +350,6 @@ const clock = (isoStr, day) => isoStr.slice(0, 10) !== day && isoStr.slice(11, 1
 const dayLabel = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 const dateLabel = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
-// HH:MM on a day, as ISO 8601 with this machine's offset for that moment (the dashboard runs here too).
-function toIso(day, hhmm) {
-  const [h, m] = hhmm.split(":").map(Number);
-  const d = parseDay(day);
-  d.setHours(h, m, 0, 0);   // 24:00 rolls over to the next day's midnight
-  const off = -d.getTimezoneOffset();
-  const sign = off >= 0 ? "+" : "-";
-  return `${iso(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
-}
 // Accepts 9:12, 0912, 912 and 09:12; returns HH:MM or null.
 function normClock(v) {
   const s = v.trim().replace(/[.h]/, ":");
@@ -496,7 +487,12 @@ function statusCell(b) {
     el("span", { class: `chip ${b.status}`, text: STATUS_LABEL[b.status] || b.status, title: STATUS_HINT[b.status] || null }));
   if (b.status === "changed" || ((b.status === "error") && b.flowapp_id != null)) box.append(el("span", { class: "flag", text: "PATCH" }));
   for (const f of b.flags || []) {
-    const [label, hint, warn] = FLAG[f] || [f, null, false];
+    let [label, hint, warn] = FLAG[f] || [f, null, false];
+    // On a stored row start/stop are what was sent and tracked_* the tracker now: the gap is the change.
+    if (f === "tracker_changed") {
+      const now = trackedOf(b);
+      label = now <= 0 ? "tracker: no time here now" : `tracker changed (${signed(now - roundedOf(b))})`;
+    }
     box.append(el("span", { class: `flag${warn ? " warn" : ""}`, text: label, title: hint }));
   }
   const cell = el("td", {}, box);
@@ -526,7 +522,8 @@ function blockRows(d, t, b, i) {
   const what = el("td", { class: "what" },
     el("span", { class: "times" }, timeInput("start", start), "–", timeInput("stop", stop)));
   const notes = [];
-  if (tStart !== start || tStop !== stop) notes.push(`tracker ${tStart}–${tStop}`);
+  if (trackedOf(b) <= 0) notes.push("tracker: none now");
+  else if (tStart !== start || tStop !== stop) notes.push(`tracker ${tStart}–${tStop}`);
   notes.push(`active ${hm(b.active_seconds || 0)}`);
   what.append(el("span", { class: "sub-line", text: notes.join(" · ") }));
   if ((b.flags || []).includes("task_changed")) what.append(el("span", { class: "sub-line", text: "tracker now counts this for another task" }));
@@ -782,8 +779,9 @@ async function editTime(d, t, b, which, input) {
   input.value = v;
   const start = which === "start" ? v : clock(b.start, d.day), stop = which === "stop" ? v : clock(b.stop, d.day);
   if (stop <= start) { state.fieldErrors.set(key, "The stop must come after the start."); render(); return; }
+  // The draft endpoint takes HH:MM on the block's day; 24:00 is the end of the day.
   const fields = { action: "edit" };
-  fields[which] = toIso(d.day, v);
+  fields[which] = v;
   await draft(d, t, b, fields, `Time saved: ${start}–${stop}`, key);
 }
 
@@ -880,7 +878,8 @@ function follow(id, total) {
 }
 
 function showProgress(j) {
-  const total = j.total || 0, processed = Math.min(total, (j.done || 0) + (j.failed || 0));
+  // done counts the failed entries too, so it always reaches total.
+  const total = j.total || 0, processed = Math.min(total, j.done || 0);
   $("progress-text").textContent = `Sending ${processed}/${total}${j.failed ? ` · ${j.failed} failed` : ""}. Editing is paused until it ends.`;
   $("progress-fill").style.transform = `scaleX(${total ? processed / total : 0})`;
   const bar = $("progress-bar");
@@ -915,7 +914,8 @@ async function endJob(j, note) {
   if (j?.fatal) showFatal(j.fatal, j);
   else if (j) {
     const failed = j.failed ? ` ${j.failed} failed: see the rows marked error.` : "";
-    showJobNote(j.cancelled ? `Stopped: ${j.done} of ${j.total} sent.${failed}` : `Sent ${j.done} of ${j.total}.${failed}`, !j.failed);
+    const sent = Math.max(0, (j.done || 0) - (j.failed || 0));
+    showJobNote(j.cancelled ? `Stopped after ${j.done} of ${j.total}: ${sent} sent.${failed}` : `Sent ${sent} of ${j.total}.${failed}`, !j.failed);
   } else if (note) showJobNote(note, false);
   await load();
   // Cancel is gone with the job: the keyboard lands on the next thing to do, not on the page top.
@@ -947,7 +947,7 @@ function showJobNote(text, ok) {
 function showFatal(f, j) {
   $("fatal").className = "banner fatal";
   $("fatal").setAttribute("role", "alert");
-  const head = j ? `FlowApp stopped the send after ${j.done} of ${j.total}.` : "FlowApp refused the request.";
+  const head = j ? `The send stopped after ${j.done} of ${j.total}.` : "FlowApp refused the request.";
   $("fatal-msg").replaceChildren(el("strong", { text: head }),
     el("span", { text: f.message || "" }), " ", el("span", { class: "mono soft", text: f.code ? `(${f.code})` : "" }));
   $("fatal").hidden = false;
