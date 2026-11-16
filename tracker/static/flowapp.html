@@ -68,6 +68,8 @@
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   input:focus-visible, select:focus-visible { outline-offset: 0; }
   input:disabled { color: var(--ink-2); background: transparent; box-shadow: none; }
+  /* The browser's placeholder grey falls under 4.5:1 on these surfaces; italic keeps it apart from a value. */
+  input::placeholder { color: var(--ink-2); opacity: 1; font-style: italic; }
   input[type="checkbox"] { box-shadow: none; padding: 0; margin: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
   input[type="checkbox"]:disabled { cursor: default; opacity: .45; }
   input[aria-invalid="true"] { box-shadow: 0 0 0 1.5px var(--danger); }
@@ -129,8 +131,8 @@
   tr.task .title { display: block; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
   tr.block td { background: var(--wash); }
   tr.block td.what { padding-left: 38px; }
-  /* Dimmed content, not cells: a dimmed cell would also fade its row background. */
-  tr.block.off td.what > *, tr.block.off td.c-comment > *, tr.block.off td.c-rm > * { opacity: .75; }
+  /* Rows that cannot be sent are told apart by colour, not opacity: faded --ink-2 drops under 4.5:1. */
+  tr.block.off .sub-line { color: var(--ink-2); }
   @media (hover: hover) and (pointer: fine) { tr.block:hover td { background: var(--select); } }
   tr.reason td { background: var(--wash); border-bottom-color: var(--grid); padding-top: 0; }
   tr.reason label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--warning-ink); font-size: 13px; }
@@ -837,6 +839,8 @@ function openConfirm() {
   const minutes = Math.ceil(sel.length * 2.1 / 60);
   $("confirm-note").textContent = `Entries go one by one, about 30 a minute${sel.length > 10 ? `: roughly ${minutes} min` : ""}. You can stop after any entry.`;
   $("confirm-send").textContent = `Send ${sel.length}`;
+  // returnValue outlives a close: without this, Escape after an earlier send would send again.
+  $("confirm").returnValue = "";
   $("confirm").showModal();
 }
 
