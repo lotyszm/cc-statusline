@@ -33,6 +33,14 @@ from . import db, ledger, paths
 
 TOKEN_ENV = "FLOWAPP_TOKEN"
 KEYCHAIN_SERVICE = "flowapp-api-token"
+REDACTED = "[token]"
+
+
+def redact(text, token):
+    """`text` with the token cut out: FlowApp may repeat it in an error message."""
+    if not token or not isinstance(text, str):
+        return text
+    return text.replace(token, REDACTED)
 
 
 def load_token(env=None, platform=None, run=None):
@@ -618,10 +626,12 @@ class Client:
             finally:
                 e.close()
         except (urllib.error.URLError, OSError, ValueError) as e:
-            raise ApiError(0, "unreachable", str(getattr(e, "reason", e))) from None
+            raise ApiError(0, "unreachable", self.redact(str(getattr(e, "reason", e)))) from None
 
-    @staticmethod
-    def _error(e):
+    def redact(self, text):
+        return redact(text, self._token)
+
+    def _error(self, e):
         try:
             err = json.loads(e.read() or b"{}").get("error") or {}
         except (ValueError, AttributeError, OSError):
@@ -633,8 +643,10 @@ class Client:
             retry = float(e.headers.get("Retry-After")) if e.headers and e.headers.get("Retry-After") else None
         except ValueError:
             pass
-        return ApiError(e.code, err.get("code") or f"http_{e.code}", err.get("message") or e.reason or "",
-                        err.get("field"), retry)
+        field = err.get("field")
+        return ApiError(e.code, self.redact(str(err.get("code") or f"http_{e.code}")),
+                        self.redact(str(err.get("message") or e.reason or "")),
+                        self.redact(str(field)) if field is not None else None, retry)
 
     def me(self):
         return self._call("GET", "/me")[2] or {}
@@ -797,7 +809,8 @@ class SendJob:
                     break
         except Exception as e:                  # a job must end, never hang as running
             with self._lock:
-                self.state["fatal"] = {"code": "internal", "message": str(e)}
+                self.state["fatal"] = {"code": "internal",
+                                       "message": redact(str(e), getattr(self.client, "_token", None))}
         finally:
             if conn is not None:
                 conn.close()

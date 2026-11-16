@@ -442,6 +442,59 @@ class FlowappEndpointTest(ServedTestCase):
         _, body = self.get("/api/flowapp/status")
         self.assertEqual((body["enabled"], body["problem"], body["message"]), (False, "unauthorized", "Brak autoryzacji"))
 
+    def test_a_token_flowapp_repeats_never_leaves_the_dashboard(self):
+        echo = f"Token expired: Bearer {FLOWAPP_TOKEN}"
+        self.fake.get_error = (401, {"error": {"code": "unauthorized", "message": echo}})
+        _, body = self.get("/api/flowapp/status")         # get() and post() fail on the token in any answer
+        self.assertEqual((body["problem"], body["message"]), ("unauthorized", "Token expired: Bearer [token]"))
+        self.fake.get_error = None
+        dashboard.flowapp_reset()
+        self.fake.script = [(400, {"error": {"code": "invalid_request", "message": echo}}, {})]
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        snap = self.wait_for(body["job_id"])
+        self.assertEqual(snap["errors"][0]["message"], "Token expired: Bearer [token]")
+        block = self.preview()["days"][0]["tasks"][0]["blocks"][0]
+        self.assertEqual((block["status"], block["error"]), ("error", "invalid_request: Token expired: Bearer [token]"))
+        self.fake.script = [(401, {"error": {"code": "unauthorized", "message": echo}}, {})]
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.assertEqual(self.wait_for(body["job_id"])["fatal"]["message"], "Token expired: Bearer [token]")
+        conn = db.connect()
+        stored = [tuple(r) for r in conn.execute("SELECT * FROM flowapp_exports")]
+        conn.close()
+        self.assertNotIn(FLOWAPP_TOKEN, repr(stored))
+
+    def test_every_flowapp_answer_has_the_token_cut_out(self):
+        self.get("/api/flowapp/status")                 # the token is looked up once, as on any first visit
+        leak = {"note": f"slipped in: {FLOWAPP_TOKEN}"}
+
+        class Job:
+            def snapshot(self):
+                return leak
+
+        def boom(*a, **k):
+            raise ValueError(f"bad: {FLOWAPP_TOKEN}")
+
+        names = ("flowapp_status", "flowapp_job", "flowapp_preview", "flowapp_draft", "flowapp_send")
+        saved = {n: getattr(dashboard, n) for n in names}
+        try:
+            dashboard.flowapp_status = lambda cfg: leak
+            dashboard.flowapp_job = lambda job_id: Job()
+            dashboard.flowapp_preview = lambda *a, **k: leak
+            dashboard.flowapp_draft = lambda *a, **k: leak
+            dashboard.flowapp_send = lambda *a, **k: (200, leak)
+            for path in ("/api/flowapp/status", "/api/flowapp/job?id=x", f"/api/flowapp/preview?from={self.day}"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path), (200, {"note": "slipped in: [token]"}))
+            for path in ("/api/flowapp/draft", "/api/flowapp/send"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.post(path, {"external_ids": ["x"]}), (200, {"note": "slipped in: [token]"}))
+            dashboard.flowapp_preview = dashboard.flowapp_draft = boom
+            self.assertEqual(self.get(f"/api/flowapp/preview?from={self.day}"), (400, {"error": "bad: [token]"}))
+            self.assertEqual(self.post("/api/flowapp/draft", {}), (400, {"error": "bad: [token]"}))
+        finally:
+            for n, f in saved.items():
+                setattr(dashboard, n, f)
+
     def test_unreachable_flowapp_degrades(self):
         self.fake.close()
         _, body = self.get("/api/flowapp/status")

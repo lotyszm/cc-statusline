@@ -273,6 +273,13 @@ def _token():
     return token, problem
 
 
+def _known_token():
+    """The token this process has looked up, if any - never a new lookup (no Keychain for an answer)."""
+    with _flowapp_lock:
+        hit = _flowapp_cache.get("token")
+    return hit[1] if hit else None
+
+
 def _flowapp_client(cfg):
     """(Client, None) when the export is on, else (None, problem code)."""
     if cfg.flowapp is None:
@@ -487,7 +494,10 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}")
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
-        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        # Every JSON answer passes here, so this is the one place the FlowApp token is cut out:
+        # FlowApp may repeat it in an error message that ends up in a status, a job or a stored entry.
+        data = body if isinstance(body, bytes) else \
+            flowapp.redact(json.dumps(body, ensure_ascii=False), _known_token()).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -590,14 +600,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"ok": True, "session_id": sid, "task": task})
 
 
-    def _flowapp_send(self, code, body, client):
-        """Send a FlowApp answer, with the token cut out should it ever have slipped in."""
-        data = json.dumps(body, ensure_ascii=False)
-        token = getattr(client, "_token", None)
-        if token and token in data:
-            data = data.replace(token, "[token]")
-        return self._send(code, data.encode("utf-8"))
-
     def _flowapp_get(self, url):
         query = parse_qs(url.query)
         cfg = config.load()
@@ -615,7 +617,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, {"error": PROBLEMS[problem], "problem": problem})
         conn = db.connect()
         try:
-            return self._flowapp_send(200, flowapp_preview(conn, cfg, client, query), client)
+            return self._send(200, flowapp_preview(conn, cfg, client, query))
         except ValueError as e:
             return self._send(400, {"error": str(e)})
         finally:
@@ -635,9 +637,9 @@ class Handler(BaseHTTPRequestHandler):
         conn = db.connect()
         try:
             if path == "/api/flowapp/draft":
-                return self._flowapp_send(200, flowapp_draft(conn, cfg, client, body), client)
+                return self._send(200, flowapp_draft(conn, cfg, client, body))
             code, answer = flowapp_send(conn, cfg, client, body)
-            return self._flowapp_send(code, answer, client)
+            return self._send(code, answer)
         except LookupError as e:
             return self._send(404, {"error": str(e).strip("'\"")})
         except ValueError as e:

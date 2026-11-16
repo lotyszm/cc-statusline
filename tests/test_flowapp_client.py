@@ -23,6 +23,7 @@ class FakeFlowApp:
 
     def __init__(self):
         self.requests, self.script, self.entries = [], [], []
+        self.get_error = None           # (status, body): the answer to every GET while set
         self.stored = {}
         self.next_id = 100
         fake = self
@@ -52,6 +53,8 @@ class FakeFlowApp:
             def do_GET(self):
                 self._record(None)
                 url = urlparse(self.path)
+                if fake.get_error:
+                    return self._answer(*fake.get_error)
                 if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                     return self._answer(401, {"error": {"code": "unauthorized", "message": "Brak autoryzacji"}})
                 if url.path.endswith("/me"):
@@ -240,6 +243,18 @@ class SendJobTest(IsolatedTestCase):
         snap = self.run_job()
         self.assertEqual((snap["done"], snap["fatal"]), (1, {"code": "unauthorized", "message": "Token wygasł"}))
         self.assertEqual([self.row(i)["status"] for i in self.ids], ["sent", "draft", "draft"])
+
+    def test_a_token_flowapp_repeats_never_reaches_the_job_or_the_database(self):
+        echo = {"error": {"code": "invalid_request", "message": f"Bad header: Bearer {TOKEN}", "field": TOKEN}}
+        self.fake.script = [(400, echo, {}), (401, {"error": {"code": "unauthorized", "message": f"Expired: {TOKEN}"}},
+                                              {})]
+        snap = self.run_job()
+        self.assertNotIn(TOKEN, json.dumps(snap))
+        self.assertIn("[token]", snap["errors"][0]["message"])
+        self.assertEqual(snap["fatal"], {"code": "unauthorized", "message": "Expired: [token]"})
+        stored = [tuple(r) for r in self.conn.execute("SELECT * FROM flowapp_exports")]
+        self.assertNotIn(TOKEN, repr(stored))
+        self.assertIn("[token]", self.row(self.ids[0])["error"])
 
     def test_missing_redmine_key_stops_the_job(self):
         self.fake.script = [(400, {"error": {"code": "redmine_key_missing", "message": "Brak klucza"}}, {})]
