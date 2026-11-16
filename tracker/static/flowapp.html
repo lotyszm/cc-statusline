@@ -72,6 +72,7 @@
   input::placeholder { color: var(--ink-2); opacity: 1; font-style: italic; }
   input[type="checkbox"] { box-shadow: none; padding: 0; margin: 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
   input[type="checkbox"]:disabled { cursor: default; opacity: .45; }
+  label.hit { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; }
   input[aria-invalid="true"] { box-shadow: 0 0 0 1.5px var(--danger); }
   a { color: inherit; text-underline-offset: 2px; }
 
@@ -97,6 +98,9 @@
             border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; display: flex; gap: 12px;
             align-items: flex-start; justify-content: space-between; }
   .banner.ok { border-left-color: var(--good); }
+  /* A banner fades in; it goes at once (hidden), so a dismissed one never lingers. */
+  .banner:not([hidden]) { transition: opacity 150ms var(--ease-out); }
+  @starting-style { .banner:not([hidden]) { opacity: 0; } }
   .banner.fatal { border-left-color: var(--danger); }
   .banner .msg { overflow-wrap: anywhere; }
   .banner .msg strong { display: block; }
@@ -213,6 +217,13 @@
     .disclosure svg, .fill { transition: none; }
     dialog[open] { transition: opacity 150ms ease; transform: none; }
     @starting-style { dialog[open] { opacity: 0; transform: none; } }
+  }
+  /* Touch: every checkbox and button gets a target of at least 44 px, laid out in full so no neighbour covers it. */
+  @media (pointer: coarse) {
+    label.hit { min-width: 44px; min-height: 44px; }
+    td.sel, th.sel { width: 44px; padding-left: 0; padding-right: 0; }
+    button { min-width: 44px; min-height: 44px; }
+    .filters label { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; }
   }
   @media (max-width: 760px) {
     .filters label.range { flex: 1 1 auto; }
@@ -372,6 +383,9 @@ function normClock(v) {
 }
 
 // Every piece of text from the data goes in through textContent.
+// A checkbox inside a label: on a touch screen the label is the 44 px target around the small box.
+const tick = (attrs) => el("label", { class: "hit" }, el("input", { type: "checkbox", ...attrs }));
+
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -488,9 +502,10 @@ function renderAccount() {
     box.append(el("span", { class: "ok", text: `FlowApp: ${s.name || "connected"}` }));
     if (until) box.append(el("span", { text: `Token valid until ${until}` }));
   }
-  box.append(el("span", { text: `Rounding up to ${s.round_minutes ?? 5} min per entry` }),
-             el("span", { text: `Gaps up to ${s.gap_minutes ?? 15} min joined` }),
-             el("span", { text: "Set in config.toml, [flowapp]" }));
+  // Only what the API says: no made-up defaults when the export is off.
+  if (s.round_minutes != null) box.append(el("span", { text: `Rounding up to ${s.round_minutes} min per entry` }));
+  if (s.gap_minutes != null) box.append(el("span", { text: `Gaps up to ${s.gap_minutes} min joined` }));
+  if (s.round_minutes != null || s.gap_minutes != null) box.append(el("span", { text: "Set in config.toml, [flowapp]" }));
 }
 
 function statusCell(b) {
@@ -555,7 +570,7 @@ function blockRows(d, t, b, i) {
   }
 
   rows.push(el("tr", { class: `block${can ? "" : " off"}`, "data-id": id },
-    el("td", { class: "sel" }, el("input", { type: "checkbox", checked: state.selected.has(id), disabled: !can || state.sending,
+    el("td", { class: "sel" }, tick({ checked: state.selected.has(id), disabled: !can || state.sending,
       "data-fid": `${id}|sel`, "aria-label": `Send the ${start}–${stop} entry of ${t.key}`,
       title: can ? null : STATUS_HINT[b.status], onchange: (ev) => toggle([id], ev.target.checked) })),
     what,
@@ -608,12 +623,12 @@ function taskRows(d, t) {
 
   const lockedAll = !editable.length || state.sending;
   const row = el("tr", { class: "task" },
-    el("td", { class: "sel" }, el("input", { type: "checkbox", checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
+    el("td", { class: "sel" }, tick({ checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
       disabled: !ids.length || state.sending, "data-fid": `${tid}|sel`, "aria-label": `Send every sendable entry of ${t.key}`,
       onchange: (ev) => toggle(ids, ev.target.checked) })),
     el("td", {}, el("div", { class: "what" },
       el("button", { type: "button", class: "disclosure", "aria-expanded": String(open), "data-fid": `${tid}|open`,
-        "aria-label": `${open ? "Hide" : "Show"} the ${t.blocks.length} entries of ${t.key}`, onclick: () => {
+        "aria-label": `${open ? "Hide" : "Show"} ${t.blocks.length === 1 ? "the entry" : `the ${t.blocks.length} entries`} of ${t.key}`, onclick: () => {
           if (state.expanded.has(tid)) state.expanded.delete(tid); else state.expanded.add(tid);
           render();
         } }, chevron()),
@@ -644,7 +659,7 @@ function dayCard(d) {
   const isToday = d.day === state.data.today;
   const blocked = tasks.every((t) => t.blocks.every((b) => b.status === "blocked" || b.flowapp_id != null));
   const title = dayLabel.format(parseDay(d.day));
-  const h = el("h2", {}, el("input", { type: "checkbox", checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
+  const h = el("h2", {}, tick({ checked: ids.length > 0 && nSel === ids.length, indeterminate: nSel > 0 && nSel < ids.length,
     disabled: !ids.length || state.sending, "data-fid": `${d.day}|sel`, "aria-label": `Send every sendable entry of ${title}`,
     onchange: (ev) => toggle(ids, ev.target.checked) }), title);
   const totals = el("div", { class: "totals tnum" },
@@ -1028,8 +1043,7 @@ const PROBLEM = {
 function renderDisabled(s) {
   $("filters").hidden = true; $("bar").hidden = true;
   const card = el("section", { class: "card disabled-card" }, el("h2", { text: "FlowApp export is not available" }),
-    el("p", { text: PROBLEM[s.problem] || "FlowApp export is not configured." }));
-  if (s.message) card.append(el("p", { text: s.message }));
+    el("p", { text: s.message || PROBLEM[s.problem] || "FlowApp export is not configured." }));
   card.append(el("p", {}, "See the FlowApp export section of the README for setup. ",
     el("code", { text: "[flowapp] url = \"…/api/v1\"" })));
   $("days").replaceChildren(card);
