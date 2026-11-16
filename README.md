@@ -406,11 +406,52 @@ minute are listed apart with their real time; they count in the hours total but 
 request, so it never shows stale numbers. To drive it by hand, or after `--no-dashboard`, use
 `bin/dashboard.sh start|stop|restart|status|logs`.
 
+### FlowApp export
+
+If you log time in FlowApp, the dashboard can propose the
+entries for you at `/flowapp`: you review and correct them, then send the ones you tick. Nothing
+is sent without that click. The page and its link stay hidden until it is set up:
+
+```toml
+[flowapp]
+url = "https://flowapp.movecloser.dev/api/v1"   # required: without it the export is off
+round_minutes = 5                                # each entry rounded up to 5, 10 or 15 minutes
+gap_minutes = 15                                 # breaks up to this long inside one task are glued
+```
+
+The API token never goes into `config.toml`. The dashboard looks for it in this order:
+
+1. the `FLOWAPP_TOKEN` environment variable;
+2. the file `flowapp-token` next to `config.toml`, read only when no one else can read it:
+   `chmod 600 ~/.config/cc-statusline/flowapp-token` (with wider rights the page says so and the
+   file stays unread);
+3. on macOS, the Keychain: `security add-generic-password -s flowapp-api-token -a "$USER" -w`.
+
+The dashboard started at login does not see variables from your shell profile, which is why the
+file and the Keychain are there. The token stays in the dashboard process: it is not shown on the
+page, in any response, in logs or in the database.
+
+What is proposed: one entry per task and day with the real start and end, built from the same
+intervals as the reports, with every subagent counted (`subagents` decides whether a subagent
+working beside its session is a worker of its own). Time a task got from several sessions counts
+once; breaks up to `gap_minutes` are glued; each entry is rounded up on its own to `round_minutes`,
+and the page shows how much the rounding added. Entries never cross midnight and may overlap
+between tasks: FlowApp tells log time from spent time itself. Billable time only, unless you switch
+the filter off. The comment is the task's title and the Redmine ID its ticket, when that is a number.
+
+What is sent: `startedAt`, `stoppedAt` with your local offset, `comment`, `redmineId` and an
+`externalId` (`cc:<task>:<start>`), so sending twice never makes a second entry. Edits are kept in
+the database and survive a reload; an entry already sent is changed with `PATCH`, and an entry
+already exported to Redmine needs a reason. An entry sent and then deleted in FlowApp is not
+offered again unless you ask to send it again. Entries older than FlowApp's 62 days are shown as
+blocked. Sending runs in the background at most 30 writes a minute.
+
 ### Files
 
 | Path | What it holds |
 | --- | --- |
 | `~/.config/cc-statusline/config.toml` | Rules, rates, the break and tool limits. |
+| `~/.config/cc-statusline/flowapp-token` | Optional: the FlowApp API token, mode 600. |
 | `~/.local/share/cc-statusline/tracker.db` | The events, sessions and task assignments, and the work list's task time on past days. |
 | `~/.local/share/cc-statusline/status/` | One small file per session, read by the status line. |
 | `~/.local/share/cc-statusline/hook.log` | Hook errors. Hooks never fail a session; they log here. |
@@ -545,7 +586,9 @@ Everything stays on your machine. The script makes exactly one outgoing request,
 IDs, working directories, branch names, tool names, task IDs and a short title per session
 (the first line of your first prompt, or the title Claude Code generates). It does not store
 your prompts or code. The dashboard listens on 127.0.0.1 only and refuses requests for any
-other host name.
+other host name. With the FlowApp export set up, the dashboard also talks to your FlowApp
+address (your account name for the page's header, your entries to compare with), and sends
+entries only when you click Send.
 
 ## Troubleshooting
 

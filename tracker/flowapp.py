@@ -680,7 +680,7 @@ class SendJob:
     """
 
     def __init__(self, conn_factory, client, external_ids, *, min_interval=2.1, sleep=time.sleep,
-                 clock=time.monotonic, now=time.time):
+                 clock=time.monotonic, now=time.time, rejected=()):
         self.id = uuid.uuid4().hex[:12]
         self.conn_factory, self.client = conn_factory, client
         self.external_ids = list(dict.fromkeys(external_ids))
@@ -688,8 +688,11 @@ class SendJob:
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._thread = None
-        self.state = {"id": self.id, "running": False, "total": len(self.external_ids), "done": 0, "failed": 0,
-                      "cancelled": False, "errors": [], "fatal": None}
+        # Entries refused before the job (prepare_send) count as done and failed from the start.
+        rejected = list(rejected)
+        self.state = {"id": self.id, "running": False, "total": len(self.external_ids) + len(rejected),
+                      "done": len(rejected), "failed": len(rejected), "cancelled": False, "errors": rejected,
+                      "fatal": None}
 
     def start(self):
         with self._lock:
@@ -781,3 +784,123 @@ class SendJob:
             with self._lock:
                 self.state["cancelled"] = self._cancel.is_set() and self.state["done"] < self.state["total"]
                 self.state["running"] = False
+
+
+# --- the page's view ----------------------------------------------------------------
+
+# Entries that are, or are to be, in FlowApp: the day and task sums count these.
+COUNTED = ("new", "today", "draft", "sent", "changed", "error")
+SENDABLE = ("new", "today", "draft", "changed", "error")
+BLOCK_FIELDS = ("external_id", "day", "start", "stop", "tracked_start", "tracked_stop", "active_seconds",
+                "comment", "redmine_id", "status", "flags", "error", "flowapp_id", "export_status")
+
+
+def _block_json(it):
+    out = {f: it[f] for f in BLOCK_FIELDS}
+    for f in ("start", "stop", "tracked_start", "tracked_stop"):
+        out[f] = iso(it[f])
+    return out
+
+
+def _sums(items):
+    counted = [it for it in items if it["status"] in COUNTED]
+    return (sum(it["tracked_stop"] - it["tracked_start"] for it in counted),
+            sum(it["stop"] - it["start"] for it in counted), counted)
+
+
+def task_json(key, client, title, items):
+    """A task row of the page: its blocks in time order and what they add up to."""
+    tracked, rounded, _ = _sums(items)
+    return {"key": key, "client": client, "title": title, "tracked_seconds": tracked, "rounded_seconds": rounded,
+            "blocks": [_block_json(it) for it in sorted(items, key=lambda it: (it["start"], it["external_id"]))]}
+
+
+def days_json(items, titles):
+    """reconcile()'s entries grouped day -> task -> block, with the day's log and spent time.
+
+    log_seconds is the clock time the day's entries cover (overlaps once),
+    spent_seconds their sum; both, and the tracked and rounded sums, count
+    only entries that are or are to be in FlowApp (not skipped, blocked or
+    deleted there).
+    """
+    by_day = defaultdict(lambda: defaultdict(list))
+    for it in items:
+        by_day[it["day"]][(it["key"], it["client"])].append(it)
+    days = []
+    for day in sorted(by_day):
+        groups = by_day[day]
+        everything = [it for g in groups.values() for it in g]
+        tracked, rounded, counted = _sums(everything)
+        log = sum(e - s for s, e in _union_spans([(it["start"], it["stop"]) for it in counted]))
+        tasks = [task_json(k, c, titles.get(k), g) for (k, c), g in
+                 sorted(groups.items(), key=lambda kv: (min(it["start"] for it in kv[1]), kv[0][0]))]
+        days.append({"day": day, "log_seconds": log, "spent_seconds": rounded, "tracked_seconds": tracked,
+                     "rounded_seconds": rounded, "tasks": tasks})
+    return days
+
+
+def titles_of(conn):
+    return {task: row["title"] for task, row in db.task_details(conn).items() if row["title"]}
+
+
+def parse_edit_time(value, day):
+    """An edited time as epoch seconds: "HH:MM" on `day` ("24:00" ends it), ISO 8601, or a number."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    d = date.fromisoformat(day)
+    if len(text) <= 5 and ":" in text:
+        h, _, m = text.partition(":")
+        if not (h.isdigit() and m.isdigit() and len(m) == 2):
+            raise ValueError(f"not a time: {text}")
+        h, m = int(h), int(m)
+        if (h, m) == (24, 0):
+            return _midnight(d + timedelta(days=1))
+        if not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError(f"not a time: {text}")
+        return datetime.combine(d, datetime.min.time()).replace(hour=h, minute=m).timestamp()
+    try:
+        return parse_time(text)
+    except ValueError:
+        raise ValueError(f"not a time: {text}") from None
+
+
+def prepare_send(conn, items, external_ids, now):
+    """Store the selected entries for a SendJob: (ids to send, rejected [{external_id, code, message}]).
+
+    `items` is a fresh reconcile() of their days, made with FlowApp's current
+    entries. Only entries in a sendable state go; a new one is stored as a
+    draft first, so the job works from the database alone. An entry exported
+    to Redmine is changed only with a reason.
+    """
+    by_id = {it["external_id"]: it for it in items}
+    send, rejected = [], []
+    for ext in dict.fromkeys(external_ids):
+        it = by_id.get(ext)
+        if it is None:
+            rejected.append({"external_id": ext, "code": "not_found",
+                             "message": "No such entry any more; reload the page"})
+            continue
+        if it["status"] not in SENDABLE:
+            rejected.append({"external_id": ext, "code": f"status_{it['status']}",
+                             "message": f"An entry with status {it['status']} is not sent"})
+            continue
+        if it["flowapp_id"] is not None and "exported" in it["flags"]:
+            row = _row(conn, ext)
+            if not (row and row["export_comment"]):
+                rejected.append({"external_id": ext, "code": "export_comment_required",
+                                 "message": "The entry is exported to Redmine: give a reason for the change"})
+                continue
+        if _row(conn, ext) is None:
+            block = Block(key=it["key"], client=it["client"], task=None, project=None, day=it["day"],
+                          tracked_start=it["tracked_start"], tracked_stop=it["tracked_stop"], start=it["start"],
+                          stop=it["stop"], active_seconds=it["active_seconds"], comment=it["comment"],
+                          redmine_id=it["redmine_id"])
+            if block.external_id != ext:        # a new entry's id is made from its own block
+                rejected.append({"external_id": ext, "code": "not_found", "message": "Reload the page"})
+                continue
+            _insert(conn, block, "draft", now)
+        send.append(ext)
+    return send, rejected

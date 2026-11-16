@@ -309,3 +309,282 @@ class WorkListViewTest(ServedTestCase):
         self.assertEqual(status, 404)                     # the old key is gone from the list...
         status, _, raw = self.request(f"/api/tasks?view=all")
         self.assertIn("Globex:globex-shop#1", [x["task"] for x in json.loads(raw)["tasks"]])
+
+
+# The JSON contract of the FlowApp page (context: the plan both sides build to).
+FLOWAPP_STATUS_KEYS = {"enabled", "problem", "message", "name", "expires_at", "scopes", "round_minutes",
+                       "gap_minutes"}
+FLOWAPP_PREVIEW_CONTRACT = {
+    "from": "2026-11-10", "to": "2026-11-16", "today": "2026-11-16", "remote_ok": True,
+    "days": [{"day": "2026-11-10", "log_seconds": 0, "spent_seconds": 0, "tracked_seconds": 0, "rounded_seconds": 0,
+              "tasks": [{"key": "d24:cms#120", "client": "d24", "title": "Toolbar icons", "tracked_seconds": 0,
+                         "rounded_seconds": 0,
+                         "blocks": [{"external_id": "cc:d24:cms#120:1762762320", "day": "2026-11-10",
+                                     "start": "", "stop": "", "tracked_start": "", "tracked_stop": "",
+                                     "active_seconds": 0, "comment": "", "redmine_id": "31", "status": "new",
+                                     "flags": [], "error": None, "flowapp_id": None, "export_status": None}]}]}]}
+FLOWAPP_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "flowapp_preview.json")
+FLOWAPP_TOKEN = "flw_dashboard_test_token_123"
+
+
+def key_shape(value):
+    """The keys of a JSON value, recursively: lists by the union of their items' shapes."""
+    if isinstance(value, dict):
+        return {k: key_shape(v) for k, v in value.items()}
+    if isinstance(value, list):
+        shapes = [key_shape(v) for v in value if isinstance(v, (dict, list))]
+        merged = {}
+        for s in shapes:
+            if isinstance(s, dict):
+                merged.update(s)
+        return [merged] if merged else []
+    return None
+
+
+class FlowappEndpointTest(ServedTestCase):
+    """The FlowApp page's API against a fake FlowApp: no real request ever leaves."""
+
+    def setUp(self):
+        super().setUp()
+        from tests.test_flowapp_client import FakeFlowApp
+        self.fake = FakeFlowApp()
+        self.write_config(CONFIG + f'\n[flowapp]\nurl = "{self.fake.url}"\n')
+        dashboard.flowapp_reset()
+        self._load_token = dashboard.load_token
+        dashboard.load_token = lambda: (FLOWAPP_TOKEN, None)
+        # The fake answers to its own token; the dashboard is given this one.
+        import tests.test_flowapp_client as fake_mod
+        self._fake_token = fake_mod.TOKEN
+        fake_mod.TOKEN = FLOWAPP_TOKEN
+        # Yesterday 10:00-10:34 on task 12345 (branch feature/12345/x), billable acme.
+        from datetime import date, timedelta
+        self.day = (date.today() - timedelta(days=1)).isoformat()
+        conn = db.connect()
+        t0 = local_ts(f"{self.day} 10:00")
+        for off, kind in ((0, "prompt"), (600, "agent"), (1200, "agent"), (2040, "stop")):
+            db.record_event(conn, ts=t0 + off, session_id="s3cccccc", kind=kind, cwd=ACME, project=ACME,
+                            branch="feature/12345/x")
+            db.touch_session(conn, "s3cccccc", t0 + off, project_dir=ACME)
+        conn.close()
+        self.ext = f"cc:12345:{int(t0)}"
+
+    def tearDown(self):
+        import tests.test_flowapp_client as fake_mod
+        fake_mod.TOKEN = self._fake_token
+        dashboard.load_token = self._load_token
+        job = dashboard._current_job
+        if job is not None:
+            job.cancel()
+            job.join(5)
+        dashboard.flowapp_reset()
+        self.fake.close()
+        super().tearDown()
+
+    def get(self, path):
+        status, _, raw = self.request(path)
+        self.assertNotIn(FLOWAPP_TOKEN.encode(), raw, path)
+        return status, json.loads(raw)
+
+    def post(self, path, body, header=True):
+        headers = {"Content-Type": "application/json", **({"X-CC-Statusline": "1"} if header else {})}
+        status, _, raw = self.request(path, body, headers)
+        self.assertNotIn(FLOWAPP_TOKEN.encode(), raw, path)
+        return status, json.loads(raw)
+
+    def preview(self):
+        status, body = self.get(f"/api/flowapp/preview?from={self.day}&to={self.day}&billable=1")
+        self.assertEqual(status, 200)
+        return body
+
+    def wait_for(self, job_id):
+        import time
+        for _ in range(200):
+            status, snap = self.get(f"/api/flowapp/job?id={job_id}")
+            self.assertEqual(status, 200)
+            if not snap["running"]:
+                return snap
+            time.sleep(0.05)
+        self.fail("the send job did not finish")
+
+    def test_status_names_the_account_and_never_the_token(self):
+        status, body = self.get("/api/flowapp/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), FLOWAPP_STATUS_KEYS)
+        self.assertEqual((body["enabled"], body["problem"], body["name"], body["expires_at"], body["scopes"],
+                          body["round_minutes"], body["gap_minutes"]),
+                         (True, None, "Test User", "2027-02-14T09:01:53.417Z", ["tracker:read", "tracker:write"], 5, 15))
+
+    def test_me_is_cached(self):
+        self.get("/api/flowapp/status")
+        self.get("/api/flowapp/status")
+        self.assertEqual(sum(r["path"].endswith("/me") for r in self.fake.requests), 1)
+
+    def test_off_without_a_url(self):
+        self.write_config(CONFIG)
+        status, body = self.get("/api/flowapp/status")
+        self.assertEqual((status, body["enabled"], body["problem"]), (200, False, "no_url"))
+        self.assertEqual(self.fake.requests, [])
+        status, body = self.get("/api/flowapp/preview")
+        self.assertEqual((status, body["problem"]), (409, "no_url"))
+
+    def test_token_problems_are_reported(self):
+        for problem in ("no_token", "token_file_mode"):
+            with self.subTest(problem=problem):
+                dashboard.flowapp_reset()
+                dashboard.load_token = lambda p=problem: (None, p)
+                status, body = self.get("/api/flowapp/status")
+                self.assertEqual((body["enabled"], body["problem"]), (False, problem))
+                self.assertTrue(body["message"])
+
+    def test_refused_token_is_unauthorized(self):
+        import tests.test_flowapp_client as fake_mod
+        fake_mod.TOKEN = "flw_another"
+        _, body = self.get("/api/flowapp/status")
+        self.assertEqual((body["enabled"], body["problem"], body["message"]), (False, "unauthorized", "Brak autoryzacji"))
+
+    def test_unreachable_flowapp_degrades(self):
+        self.fake.close()
+        _, body = self.get("/api/flowapp/status")
+        self.assertEqual((body["enabled"], body["problem"]), (True, "unreachable"))
+        data = self.preview()
+        self.assertFalse(data["remote_ok"])
+        self.assertEqual(data["days"][0]["tasks"][0]["blocks"][0]["status"], "new")
+        status, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.assertEqual(status, 503)
+        from tests.test_flowapp_client import FakeFlowApp
+        self.fake = FakeFlowApp()
+
+    def test_preview_follows_the_contract(self):
+        data = self.preview()
+        self.assertEqual(key_shape(data), key_shape(FLOWAPP_PREVIEW_CONTRACT))
+        day = data["days"][0]
+        block = day["tasks"][0]["blocks"][0]
+        self.assertEqual((day["day"], day["tasks"][0]["key"], day["tasks"][0]["title"], block["external_id"],
+                          block["status"], block["comment"]),
+                         (self.day, "12345", "Hotfix pricing", self.ext, "new", "Hotfix pricing"))
+        self.assertEqual((day["tracked_seconds"], day["rounded_seconds"], day["log_seconds"], day["spent_seconds"]),
+                         (34 * 60, 35 * 60, 35 * 60, 35 * 60))
+        self.assertTrue(block["start"].startswith(f"{self.day}T10:00:00+0"))
+
+    @unittest.skipUnless(os.path.exists(FLOWAPP_FIXTURE), "the page's fixture comes with the page")
+    def test_preview_matches_the_page_fixture(self):
+        with open(FLOWAPP_FIXTURE, encoding="utf-8") as f:
+            fixture = json.load(f)
+        self.assertEqual(key_shape(self.preview()), key_shape(fixture))
+
+    def test_edit_survives_a_reload(self):
+        status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "edit",
+                                                        "comment": "Pricing hotfix", "redmine_id": "31",
+                                                        "stop": "10:45"})
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), {"ok", "task"})
+        self.assertEqual(set(body["task"]), {"key", "client", "title", "tracked_seconds", "rounded_seconds", "blocks"})
+        block = self.preview()["days"][0]["tasks"][0]["blocks"][0]
+        self.assertEqual((block["status"], block["comment"], block["redmine_id"], block["stop"][11:16]),
+                         ("draft", "Pricing hotfix", "31", "10:45"))
+
+    def test_invalid_edit_is_400(self):
+        for change in ({"stop": "09:00"}, {"stop": "25:00"}, {"redmine_id": "CMS-1"}):
+            with self.subTest(change=change):
+                status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext,
+                                                                "action": "edit", **change})
+                self.assertEqual(status, 400)
+                self.assertTrue(body["error"])
+
+    def test_unknown_entry_is_404(self):
+        status, _ = self.post("/api/flowapp/draft", {"day": self.day, "external_id": "cc:nope:1", "action": "skip"})
+        self.assertEqual(status, 404)
+
+    def test_resend_only_for_entries_deleted_in_flowapp(self):
+        status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "resend"})
+        self.assertEqual(status, 400)
+
+    def test_send_then_the_entry_is_sent_once(self):
+        status, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.assertEqual((status, set(body)), (200, {"job_id"}))
+        snap = self.wait_for(body["job_id"])
+        self.assertEqual(set(snap), {"id", "running", "total", "done", "failed", "cancelled", "errors", "fatal"})
+        self.assertEqual((snap["total"], snap["done"], snap["failed"], snap["fatal"]), (1, 1, 0, None))
+        self.fake.entries = list(self.fake.stored.values())
+        block = self.preview()["days"][0]["tasks"][0]["blocks"][0]
+        self.assertEqual((block["status"], block["flowapp_id"], block["export_status"]), ("sent", "101", "none"))
+        # Selecting it again sends nothing: it is refused before the job.
+        status, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        snap = self.wait_for(body["job_id"])
+        self.assertEqual((snap["done"], snap["failed"], snap["errors"][0]["code"]), (1, 1, "status_sent"))
+        self.assertEqual(len(self.fake.writes()), 1)
+
+    def test_deleted_in_flowapp_then_resent_on_request(self):
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.wait_for(body["job_id"])
+        self.fake.entries = []                      # deleted by hand in FlowApp
+        block = self.preview()["days"][0]["tasks"][0]["blocks"][0]
+        self.assertEqual(block["status"], "deleted_remote")
+        status, body = self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "resend"})
+        self.assertEqual((status, body["task"]["blocks"][0]["status"]), (200, "new"))
+
+    def test_one_send_at_a_time(self):
+        class Running:
+            id = "busy"
+
+            def snapshot(self):
+                return {"running": True}
+
+            def cancel(self):
+                pass
+
+            def join(self, timeout=None):
+                pass
+
+        dashboard._current_job = Running()
+        status, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.assertEqual((status, body["job_id"]), (409, "busy"))
+        dashboard._current_job = None
+
+    def test_cancel_and_unknown_job(self):
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        status, answer = self.post("/api/flowapp/job/cancel", {"id": body["job_id"]})
+        self.assertEqual((status, answer), (200, {"ok": True}))
+        self.wait_for(body["job_id"])
+        self.assertEqual(self.get("/api/flowapp/job?id=nope")[0], 404)
+        self.assertEqual(self.post("/api/flowapp/job/cancel", {"id": "nope"})[0], 404)
+
+    def test_writes_need_the_header(self):
+        for path, body in (("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "skip"}),
+                           ("/api/flowapp/send", {"external_ids": [self.ext]}),
+                           ("/api/flowapp/job/cancel", {"id": "x"})):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, body, header=False)[0], 403)
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_reads_check_the_host(self):
+        for path in ("/api/flowapp/status", "/api/flowapp/preview", "/api/flowapp/job?id=x", "/flowapp"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path, headers={"Host": "evil.example:80"})[0], 403)
+
+    def test_no_route_ever_answers_with_the_token(self):
+        # get()/post() assert the token is absent from every body; walk every route once.
+        self.get("/api/flowapp/status")
+        self.preview()
+        self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "skip"})
+        self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "unskip"})
+        _, body = self.post("/api/flowapp/send", {"external_ids": [self.ext]})
+        self.wait_for(body["job_id"])
+        self.post("/api/flowapp/job/cancel", {"id": body["job_id"]})
+        status, _, raw = self.request("/flowapp")
+        self.assertNotIn(FLOWAPP_TOKEN.encode(), raw)
+
+    def test_the_page_is_served_when_present(self):
+        import tempfile
+        saved = dashboard.FLOWAPP_PAGE
+        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
+            f.write("<html>flowapp</html>")
+        try:
+            dashboard.FLOWAPP_PAGE = dashboard.Path(f.name)
+            status, ctype, raw = self.request("/flowapp")
+            self.assertEqual((status, ctype, raw), (200, "text/html; charset=utf-8", b"<html>flowapp</html>"))
+            dashboard.FLOWAPP_PAGE = dashboard.Path(f.name + ".missing")
+            self.assertEqual(self.request("/flowapp")[0], 404)
+        finally:
+            dashboard.FLOWAPP_PAGE = saved
+            os.unlink(f.name)
