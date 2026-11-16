@@ -187,6 +187,7 @@
       <nav class="pages" aria-label="Pages">
         <a href="/">Time</a>
         <a href="/tasks" aria-current="page">Work list</a>
+        <a href="/flowapp" id="nav-flowapp" hidden>FlowApp</a>
       </nav>
     </div>
   </header>
@@ -628,6 +629,9 @@ $("q").value = state.q;
 if (!initial.get("task")) showGuide();
 // The pane's project list comes with the work list, so a linked task opens after it.
 load().then(() => { if (initial.get("task")) openTask(initial.get("task")); });
+// The FlowApp page is listed only where it is set up; without it the request fails and the link stays hidden.
+fetch("/api/flowapp/status").then((r) => r.ok ? r.json() : null)
+  .then((s) => { if (s && s.enabled === true) $("nav-flowapp").hidden = false; }).catch(() => {});
 </script>
 </body>
 </html>
