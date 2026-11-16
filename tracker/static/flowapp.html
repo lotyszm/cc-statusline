@@ -63,7 +63,7 @@
   }
   button { cursor: pointer; transition: transform 160ms var(--ease-out), background-color 150ms ease; }
   button:active:not(:disabled) { transform: scale(0.97); }
-  button:disabled { cursor: default; color: var(--ink-2); opacity: .6; }
+  button:disabled, button[aria-disabled="true"] { cursor: default; color: var(--ink-2); opacity: .6; }
   @media (hover: hover) and (pointer: fine) { button:hover:not(:disabled) { background: var(--surface-2); } }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   input:focus-visible, select:focus-visible { outline-offset: 0; }
@@ -98,6 +98,7 @@
   .banner.fatal { border-left-color: var(--danger); }
   .banner .msg { overflow-wrap: anywhere; }
   .banner .msg strong { display: block; }
+  .bar .banner { max-width: 1440px; margin: 0 auto 10px; box-shadow: var(--shadow); }
   .banner .close { flex: none; box-shadow: none; background: transparent; padding: 2px 8px; color: var(--ink-2); }
 
   .days { display: grid; gap: 16px; transition: opacity 150ms ease; }
@@ -252,10 +253,6 @@
     <button type="button" id="reload">Reload</button>
   </nav>
 
-  <div class="banner fatal" id="fatal" role="alert" hidden>
-    <div class="msg" id="fatal-msg"></div>
-    <button type="button" class="close" id="fatal-close" aria-label="Dismiss error">Dismiss</button>
-  </div>
   <div class="banner" id="banner" role="status" hidden>
     <div class="msg" id="banner-msg"></div>
     <button type="button" class="close" id="banner-close" aria-label="Dismiss message">Dismiss</button>
@@ -264,6 +261,11 @@
   <main class="days" id="days" aria-label="Entries by day"></main>
 
   <div class="bar" id="bar">
+    <!-- In the sticky footer: a send ends there, so its fatal error shows where the eye already is. -->
+    <div class="banner fatal" id="fatal" role="alert" hidden>
+      <div class="msg" id="fatal-msg"></div>
+      <button type="button" class="close" id="fatal-close" aria-label="Dismiss the send result">Dismiss</button>
+    </div>
     <div class="bar-inner">
       <div class="summary" id="summary" aria-live="polite"></div>
       <div class="progress" id="progress" hidden>
@@ -858,7 +860,7 @@ function setSending(on) {
   $("summary").hidden = on;
   $("filters").inert = on;
   $("days").inert = on;
-  if (on) { $("cancel-job").disabled = false; $("cancel-job").textContent = "Cancel"; }
+  if (on) { $("cancel-job").removeAttribute("aria-disabled"); $("cancel-job").textContent = "Cancel"; }
 }
 
 function follow(id, total) {
@@ -900,23 +902,26 @@ async function endJob(j, note) {
   clearTimeout(pollTimer);
   state.job = null;
   try { sessionStorage.removeItem(JOB_KEY); } catch (e) {}
-  const focusBack = document.activeElement === $("cancel-job");
+  const a = document.activeElement;
+  const focusBack = !a || a === document.body || a === $("cancel-job");
   setSending(false);
   state.jobErrors = new Map((j?.errors || []).map((e) => [e.external_id, errorText(e)]));
   if (j?.fatal) showFatal(j.fatal, j);
   else if (j) {
     const failed = j.failed ? ` ${j.failed} failed: see the rows marked error.` : "";
-    showBanner(j.cancelled ? `Stopped: ${j.done} of ${j.total} sent.${failed}` : `Sent ${j.done} of ${j.total}.${failed}`, !j.failed);
-  } else if (note) showBanner(note);
+    showJobNote(j.cancelled ? `Stopped: ${j.done} of ${j.total} sent.${failed}` : `Sent ${j.done} of ${j.total}.${failed}`, !j.failed);
+  } else if (note) showJobNote(note, false);
   await load();
-  if (focusBack) $("send").focus();
+  // Cancel is gone with the job: the keyboard lands on the next thing to do, not on the page top.
+  if (focusBack) ($("fatal").classList.contains("fatal") && !$("fatal").hidden ? $("fatal-close") : !$("send").disabled ? $("send") : $("fatal-close")).focus();
 }
 
 async function cancelJob() {
-  if (!state.job) return;
-  $("cancel-job").disabled = true; $("cancel-job").textContent = "Stopping after this entry…";
+  // aria-disabled, not disabled: a disabled button drops the focus to the page top.
+  if (!state.job || $("cancel-job").getAttribute("aria-disabled") === "true") return;
+  $("cancel-job").setAttribute("aria-disabled", "true"); $("cancel-job").textContent = "Stopping after this entry…";
   try { await post("/api/flowapp/job/cancel", { id: state.job.id }); }
-  catch (e) { showBanner(`Could not stop: ${e.message}`); $("cancel-job").disabled = false; $("cancel-job").textContent = "Cancel"; }
+  catch (e) { showBanner(`Could not stop: ${e.message}`); $("cancel-job").removeAttribute("aria-disabled"); $("cancel-job").textContent = "Cancel"; }
 }
 
 // ---------------------------------------------------------------- banners
@@ -926,12 +931,20 @@ function showBanner(text, ok = false) {
   $("banner").classList.toggle("ok", ok);
   $("banner").hidden = !text;
 }
+// The send's outcome, in the footer where the send was started; a fatal one is an alert.
+function showJobNote(text, ok) {
+  $("fatal-msg").replaceChildren(el("span", { text }));
+  $("fatal").className = `banner${ok ? " ok" : ""}`;
+  $("fatal").setAttribute("role", "status");
+  $("fatal").hidden = false;
+}
 function showFatal(f, j) {
+  $("fatal").className = "banner fatal";
+  $("fatal").setAttribute("role", "alert");
   const head = j ? `FlowApp stopped the send after ${j.done} of ${j.total}.` : "FlowApp refused the request.";
   $("fatal-msg").replaceChildren(el("strong", { text: head }),
     el("span", { text: f.message || "" }), " ", el("span", { class: "mono soft", text: f.code ? `(${f.code})` : "" }));
   $("fatal").hidden = false;
-  $("fatal").scrollIntoView({ block: "nearest" });
 }
 function hideFatal() { $("fatal").hidden = true; }
 
