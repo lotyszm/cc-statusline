@@ -115,7 +115,9 @@
   .empty { color: var(--ink-2); padding: 8px 0; }
 
   /* The table scrolls inside its card; the page itself never scrolls sideways. */
-  .scroll { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+  /* position: relative keeps the visually hidden header text inside the scroller; without it the
+     page itself grew to the table's width on a phone. */
+  .scroll { position: relative; overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
   table { border-collapse: collapse; width: 100%; min-width: 1040px; table-layout: fixed; }
   /* Fixed columns keep every day's table aligned with the others. */
   col.c-sel { width: 32px; } col.c-what { width: 250px; } col.c-rm { width: 104px; }
