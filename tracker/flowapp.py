@@ -11,11 +11,18 @@ The token never leaves this module's callers' process: it is not written to
 the config, the database, a log or any response of the dashboard.
 """
 
+import json
 import math
 import os
 import stat
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -374,11 +381,12 @@ def mark_sent(conn, external_id, entry, now):
     request; the row then stays `changed`.
     """
     row = _row(conn, external_id)
-    sent = {"sent_start": parse_time(entry.get("startedAt")), "sent_stop": parse_time(entry.get("stoppedAt")),
-            "sent_comment": entry.get("comment"),
-            "sent_redmine_id": str(entry["redmineId"]) if entry.get("redmineId") not in (None, "") else None}
-    if sent["sent_start"] is None:
-        sent["sent_start"], sent["sent_stop"] = row["start"], row["stop"]
+    # A field the answer leaves out was accepted as sent.
+    sent = {"sent_start": parse_time(entry["startedAt"]) if entry.get("startedAt") else row["start"],
+            "sent_stop": parse_time(entry["stoppedAt"]) if entry.get("stoppedAt") else row["stop"],
+            "sent_comment": entry["comment"] if "comment" in entry else row["comment"],
+            "sent_redmine_id": (str(entry["redmineId"]) if entry["redmineId"] not in (None, "") else None)
+            if "redmineId" in entry else row["redmine_id"]}
     values = {"start": row["start"], "stop": row["stop"], "comment": row["comment"], "redmine_id": row["redmine_id"]}
     status = "sent" if _same_sent(values, sent) else "changed"
     _update(conn, external_id, now, flowapp_id=str(entry.get("id")), status=status, error=None, sent_at=now,
@@ -537,3 +545,239 @@ def reconcile(blocks, exports, remote, today, now):
             it["flags"].append("overlaps_sent")
     out.sort(key=lambda it: (it["day"], it["start"], it["key"]))
     return out
+
+
+# --- FlowApp API ------------------------------------------------------------------
+
+ENTRIES_PATH = "/tracker/entries"
+RANGE_PARAMS = ("from", "to")           # GET /tracker/entries?from=YYYY-MM-DD&to=YYYY-MM-DD
+MAX_RANGE_DAYS = 93                     # FlowApp's longest range per list request
+
+
+class ApiError(Exception):
+    """A FlowApp answer other than success, or no answer (status 0, code "unreachable")."""
+
+    def __init__(self, status, code, message, field=None, retry_after=None):
+        super().__init__(f"{status} {code}: {message}")
+        self.status, self.code, self.message, self.field, self.retry_after = status, code, message, field, retry_after
+
+
+def _unwrap(data):
+    """An entry or a list from a body that may wrap it in {"data": ...}."""
+    if isinstance(data, dict) and "id" not in data:
+        for name in ("data", "entries", "items"):
+            if name in data:
+                return data[name]
+    return data
+
+
+class Client:
+    """FlowApp API v1 over urllib. The token goes only into the Authorization header."""
+
+    def __init__(self, url, token, timeout=15):
+        self.url = url.rstrip("/")
+        self._token = token
+        self.timeout = timeout
+
+    def __repr__(self):
+        return f"Client({self.url!r})"
+
+    def _call(self, method, path, body=None, query=None):
+        url = self.url + path + ("?" + urllib.parse.urlencode(query) if query else "")
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {self._token}", "Accept": "application/json",
+            **({"Content-Type": "application/json"} if data is not None else {})})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                raw = r.read()
+                return r.status, r.headers, json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            try:
+                raise self._error(e) from None
+            finally:
+                e.close()
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise ApiError(0, "unreachable", str(getattr(e, "reason", e))) from None
+
+    @staticmethod
+    def _error(e):
+        try:
+            err = json.loads(e.read() or b"{}").get("error") or {}
+        except (ValueError, AttributeError, OSError):
+            err = {}
+        if not isinstance(err, dict):
+            err = {"message": str(err)}
+        retry = None
+        try:
+            retry = float(e.headers.get("Retry-After")) if e.headers and e.headers.get("Retry-After") else None
+        except ValueError:
+            pass
+        return ApiError(e.code, err.get("code") or f"http_{e.code}", err.get("message") or e.reason or "",
+                        err.get("field"), retry)
+
+    def me(self):
+        return self._call("GET", "/me")[2] or {}
+
+    def entries(self, day_from, day_to):
+        """Every entry of the days day_from..day_to, asked for at most 93 days at a time."""
+        out, lo = [], day_from
+        while lo <= day_to:
+            hi = min(day_to, lo + timedelta(days=MAX_RANGE_DAYS - 1))
+            data = _unwrap(self._call("GET", ENTRIES_PATH, query={RANGE_PARAMS[0]: lo.isoformat(),
+                                                                  RANGE_PARAMS[1]: hi.isoformat()})[2])
+            out.extend(e for e in data or () if isinstance(e, dict))
+            lo = hi + timedelta(days=1)
+        return out
+
+    def create(self, payload):
+        """(entry, replay): replay is True when FlowApp already had this externalId."""
+        status, headers, data = self._call("POST", ENTRIES_PATH, payload)
+        replay = (headers.get("Idempotent-Replay") or "").lower() == "true" or status == 200
+        return _unwrap(data) or {}, replay
+
+    def patch(self, entry_id, payload):
+        return _unwrap(self._call("PATCH", f"{ENTRIES_PATH}/{urllib.parse.quote(str(entry_id), safe='')}",
+                                  payload)[2]) or {}
+
+
+def create_payload(row):
+    p = {"startedAt": iso(row["start"]), "stoppedAt": iso(row["stop"]), "comment": row["comment"],
+         "externalId": row["external_id"]}
+    if row["redmine_id"]:
+        p["redmineId"] = row["redmine_id"]
+    return p
+
+
+def patch_payload(row):
+    """Only what differs from what FlowApp holds, plus the reason for the change when one is stored."""
+    p = {}
+    if int(row["start"]) != int(row["sent_start"] or 0):
+        p["startedAt"] = iso(row["start"])
+    if int(row["stop"]) != int(row["sent_stop"] or 0):
+        p["stoppedAt"] = iso(row["stop"])
+    if (row["comment"] or "") != (row["sent_comment"] or ""):
+        p["comment"] = row["comment"]
+    if (row["redmine_id"] or None) != (row["sent_redmine_id"] or None):
+        p["redmineId"] = row["redmine_id"]
+    if p and row["export_comment"]:
+        p["exportComment"] = row["export_comment"]
+    return p
+
+
+FATAL_CODES = ("redmine_key_missing", "unreachable")
+MAX_RETRIES = 5
+
+
+class SendJob:
+    """Sends stored blocks one by one in a thread, at most one write per min_interval.
+
+    A block without a FlowApp id is created (its externalId makes a repeat
+    harmless), one with an id is patched. A row only ever changes to `sent`
+    or `error` after FlowApp answered, so a job cut short leaves nothing
+    half-done: sending again replays. 429 waits Retry-After and retries the
+    same block; 401, a missing Redmine key or no connection stop the job.
+    """
+
+    def __init__(self, conn_factory, client, external_ids, *, min_interval=2.1, sleep=time.sleep,
+                 clock=time.monotonic, now=time.time):
+        self.id = uuid.uuid4().hex[:12]
+        self.conn_factory, self.client = conn_factory, client
+        self.external_ids = list(dict.fromkeys(external_ids))
+        self.min_interval, self.sleep, self.clock, self.now = min_interval, sleep, clock, now
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._thread = None
+        self.state = {"id": self.id, "running": False, "total": len(self.external_ids), "done": 0, "failed": 0,
+                      "cancelled": False, "errors": [], "fatal": None}
+
+    def start(self):
+        with self._lock:
+            self.state["running"] = True
+        self._thread = threading.Thread(target=self.run, name=f"flowapp-send-{self.id}", daemon=True)
+        self._thread.start()
+        return self
+
+    def join(self, timeout=None):
+        if self._thread:
+            self._thread.join(timeout)
+
+    def cancel(self):
+        self._cancel.set()
+
+    def snapshot(self):
+        with self._lock:
+            return {**self.state, "errors": list(self.state["errors"]),
+                    "fatal": dict(self.state["fatal"]) if self.state["fatal"] else None}
+
+    def _bump(self, failed=False, error=None):
+        with self._lock:
+            self.state["done"] += 1
+            if failed:
+                self.state["failed"] += 1
+                self.state["errors"].append(error)
+
+    def run(self):
+        with self._lock:
+            self.state["running"] = True
+        conn = None
+        try:
+            conn = self.conn_factory()
+            last = None
+            for ext in self.external_ids:
+                if self._cancel.is_set():
+                    break
+                row = _row(conn, ext)
+                if row is None or row["status"] in ("sent", "skipped", "merged"):
+                    self._bump()
+                    continue
+                payload = create_payload(row) if row["flowapp_id"] is None else patch_payload(row)
+                if not payload:                 # a patch with nothing left to change
+                    _update(conn, ext, self.now(), status="sent", error=None)
+                    self._bump()
+                    continue
+                for attempt in range(MAX_RETRIES + 1):
+                    if last is not None:
+                        wait = self.min_interval - (self.clock() - last)
+                        if wait > 0:
+                            self.sleep(wait)
+                    if self._cancel.is_set():   # cancelled during the pause: this one is not started
+                        break
+                    last = self.clock()
+                    try:
+                        if row["flowapp_id"] is None:
+                            entry, _ = self.client.create(payload)
+                        else:
+                            entry = self.client.patch(row["flowapp_id"], payload)
+                    except ApiError as e:
+                        if e.status == 429 and attempt < MAX_RETRIES:
+                            self.sleep(e.retry_after if e.retry_after is not None else 60)
+                            last = None         # Retry-After was the pause
+                            continue
+                        if e.status == 401 or e.code in FATAL_CODES:
+                            with self._lock:
+                                self.state["fatal"] = {"code": e.code, "message": e.message}
+                            return
+                        text = e.message + (f" ({e.field})" if e.field else "")
+                        mark_error(conn, ext, e.code, text, self.now())
+                        self._bump(True, {"external_id": ext, "code": e.code, "message": text})
+                        break
+                    if not entry.get("id"):
+                        if row["flowapp_id"] is None:
+                            text = "FlowApp answered without an entry id"
+                            mark_error(conn, ext, "bad_answer", text, self.now())
+                            self._bump(True, {"external_id": ext, "code": "bad_answer", "message": text})
+                            break
+                        entry = {**entry, "id": row["flowapp_id"]}
+                    mark_sent(conn, ext, entry, self.now())
+                    self._bump()
+                    break
+        except Exception as e:                  # a job must end, never hang as running
+            with self._lock:
+                self.state["fatal"] = {"code": "internal", "message": str(e)}
+        finally:
+            if conn is not None:
+                conn.close()
+            with self._lock:
+                self.state["cancelled"] = self._cancel.is_set() and self.state["done"] < self.state["total"]
+                self.state["running"] = False
