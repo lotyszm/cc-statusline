@@ -55,6 +55,14 @@ currency = "PLN"
 # namespace = true      # keys become "client:ID" (acme:PROJ-12, globex:48302), so two
 #                       # clients' trackers can use the same numbers without mixing
 # remind = false        # no work-list reminder for the agent with each prompt
+
+# Export to FlowApp (a page in the dashboard). Off unless url is set; the token
+# comes from FLOWAPP_TOKEN, the file flowapp-token next to this one (chmod 600)
+# or, on macOS, the Keychain item "flowapp-api-token" - never from this file.
+# [flowapp]
+# url = "https://flowapp.example.com/api/v1"
+# round_minutes = 5     # each entry rounded up to 5, 10 or 15 minutes
+# gap_minutes = 15      # breaks up to this long inside one task are glued into one entry
 """
 
 
@@ -88,6 +96,32 @@ def compile_path(glob):
     return re.compile("^" + "".join(out) + "$")
 
 
+@dataclass
+class FlowappSettings:
+    url: str
+    round_minutes: int = 5
+    gap_minutes: float = 15
+
+
+ROUND_STEPS = (5, 10, 15)
+
+
+def _flowapp(data):
+    """FlowappSettings from the [flowapp] table, or None: without a url the export is off."""
+    if not isinstance(data, dict):
+        return None
+    url = str(data.get("url") or "").strip().rstrip("/")
+    if not url:
+        return None
+    step = data.get("round_minutes", 5)
+    if isinstance(step, bool) or step not in ROUND_STEPS:
+        step = 5
+    gap = data.get("gap_minutes", 15)
+    if isinstance(gap, bool) or not isinstance(gap, (int, float)) or gap < 0:
+        gap = 15
+    return FlowappSettings(url, int(step), gap)
+
+
 class Config:
     def __init__(self, data=None, error=None):
         data = data or {}
@@ -117,6 +151,7 @@ class Config:
         for rule in reversed(self.rules):
             if rule.client:
                 self.known_clients[rule.client] = rule.billable
+        self.flowapp = _flowapp(data.get("flowapp"))
         self._seen = {}
 
     def classify(self, path):
