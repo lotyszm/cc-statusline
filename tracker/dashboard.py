@@ -9,6 +9,7 @@ approves, and the Host check stops DNS rebinding.
 
 import json
 import sys
+import threading
 import time
 import urllib.request
 import webbrowser
@@ -18,11 +19,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, db, ledger, paths, status, worklist
+from . import config, db, flowapp, ledger, paths, status, worklist
 
 PAGE = Path(__file__).resolve().parent / "static" / "dashboard.html"
 TASKS_PAGE = Path(__file__).resolve().parent / "static" / "tasks.html"
+FLOWAPP_PAGE = Path(__file__).resolve().parent / "static" / "flowapp.html"
 MAX_BODY = 64 * 1024
+FLOWAPP_POSTS = ("/api/flowapp/draft", "/api/flowapp/send", "/api/flowapp/job/cancel")
 
 
 def _range(query, now):
@@ -226,6 +229,291 @@ def build_task(conn, cfg, key, now=None):
     return out
 
 
+# --- FlowApp export -----------------------------------------------------------------
+#
+# The token stays in this process: it is looked up (and cached) here, handed to
+# flowapp.Client and never put into a response. One send job runs at a time.
+
+TOKEN_TTL = 300                 # seconds a looked-up token (or its absence) is reused
+ME_TTL = 300                    # seconds FlowApp's /me answer is reused; a failure for ME_RETRY
+ME_RETRY = 60
+MAX_PREVIEW_DAYS = 93
+PROBLEMS = {
+    "no_url": "Set [flowapp] url in config.toml to turn the FlowApp export on.",
+    "no_token": "No FlowApp token: set FLOWAPP_TOKEN, put it in the flowapp-token file next to config.toml "
+                "(chmod 600) or, on macOS, in the Keychain as flowapp-api-token.",
+    "token_file_mode": "The flowapp-token file can be read by others, so it was not read: chmod 600 it.",
+    "unauthorized": "FlowApp refused the token: it may have expired or been revoked.",
+    "unreachable": "FlowApp could not be reached; proposals are shown without its current entries.",
+}
+_flowapp_lock = threading.Lock()
+_flowapp_cache = {}             # "token": (at, token, problem); ("me", url): (at, answer or ApiError);
+                                # ("entries", url): (first, last, FlowApp's entries of those days)
+_jobs = {}                      # job id -> SendJob, the latest few
+_current_job = None
+load_token = flowapp.load_token         # replaced in tests: they must never reach the real Keychain
+
+
+def flowapp_reset():
+    """Forget cached tokens, /me answers and jobs (tests, a changed token file)."""
+    global _current_job
+    with _flowapp_lock:
+        _flowapp_cache.clear()
+        _jobs.clear()
+        _current_job = None
+
+
+def _token():
+    with _flowapp_lock:
+        hit = _flowapp_cache.get("token")
+        if hit and time.time() - hit[0] < TOKEN_TTL:
+            return hit[1], hit[2]
+    token, problem = load_token()
+    with _flowapp_lock:
+        _flowapp_cache["token"] = (time.time(), token, problem)
+    return token, problem
+
+
+def _known_token():
+    """The token this process has looked up, if any - never a new lookup (no Keychain for an answer)."""
+    with _flowapp_lock:
+        hit = _flowapp_cache.get("token")
+    return hit[1] if hit else None
+
+
+def _flowapp_client(cfg):
+    """(Client, None) when the export is on, else (None, problem code)."""
+    if cfg.flowapp is None:
+        return None, "no_url"
+    token, problem = _token()
+    if token is None:
+        return None, problem
+    return flowapp.Client(cfg.flowapp.url, token), None
+
+
+def _me(client):
+    key = ("me", client.url)
+    with _flowapp_lock:
+        hit = _flowapp_cache.get(key)
+        if hit and time.time() - hit[0] < (ME_RETRY if isinstance(hit[1], flowapp.ApiError) else ME_TTL):
+            answer = hit[1]
+        else:
+            answer = None
+    if answer is None:
+        try:
+            answer = client.me()
+        except flowapp.ApiError as e:
+            answer = e
+        with _flowapp_lock:
+            _flowapp_cache[key] = (time.time(), answer)
+    if isinstance(answer, flowapp.ApiError):
+        raise answer
+    return answer
+
+
+def _pick(d, *names):
+    for name in names:
+        cur = d
+        for part in name.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if cur is not None:
+            return cur
+    return None
+
+
+def flowapp_status(cfg):
+    """Whether the export is on and for whom - never the token itself."""
+    s = cfg.flowapp
+    out = {"enabled": False, "problem": None, "message": None, "name": None, "expires_at": None, "scopes": None,
+           "round_minutes": s.round_minutes if s else None, "gap_minutes": s.gap_minutes if s else None}
+    client, problem = _flowapp_client(cfg)
+    if client is None:
+        return {**out, "problem": problem, "message": PROBLEMS[problem]}
+    try:
+        me = _me(client)
+    except flowapp.ApiError as e:
+        if e.status == 401:
+            return {**out, "problem": "unauthorized", "message": e.message or PROBLEMS["unauthorized"]}
+        return {**out, "enabled": True, "problem": "unreachable", "message": PROBLEMS["unreachable"]}
+    me = me if isinstance(me, dict) else {}
+    scopes = _pick(me, "scopes", "token.scopes", "data.scopes")
+    return {**out, "enabled": True, "name": _pick(me, "name", "user.name", "data.name", "data.user.name"),
+            "expires_at": _pick(me, "expiresAt", "expires_at", "token.expiresAt", "data.expiresAt",
+                                "data.token.expiresAt"),
+            "scopes": list(scopes) if isinstance(scopes, (list, tuple)) else None}
+
+
+def _remote(client, first, last):
+    """FlowApp's entries around the days (a day's UTC edges differ from local), or None.
+
+    What came back is kept for the drafts that follow (see _known_remote).
+    """
+    lo, hi = first - timedelta(days=1), last + timedelta(days=1)
+    try:
+        entries = client.entries(lo, hi)
+    except flowapp.ApiError:
+        return None
+    with _flowapp_lock:
+        _flowapp_cache[("entries", client.url)] = (lo, hi, entries)
+    return entries
+
+
+def _known_remote(client, first, last):
+    """FlowApp's entries for the days as the last preview found them, or None: nothing is asked.
+
+    A draft changes only this tool's database, so it does not wait on FlowApp; the
+    preview and the send ask it again. Forgotten when a send starts, as the job adds entries.
+    """
+    with _flowapp_lock:
+        hit = _flowapp_cache.get(("entries", client.url))
+    if hit and hit[0] <= first - timedelta(days=1) and last + timedelta(days=1) <= hit[1]:
+        return hit[2]
+    return None
+
+
+def _days(query, now):
+    today = datetime.fromtimestamp(now).date()
+    first = today - timedelta(days=today.weekday() + 7)     # last full week by default
+    last = first + timedelta(days=6)
+    try:
+        if _one(query, "from"):
+            first = datetime.strptime(_one(query, "from"), "%Y-%m-%d").date()
+        if _one(query, "to"):
+            last = datetime.strptime(_one(query, "to"), "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("from and to are dates, YYYY-MM-DD") from None
+    if last < first:
+        first, last = last, first
+    if (last - first).days >= MAX_PREVIEW_DAYS:
+        raise ValueError(f"at most {MAX_PREVIEW_DAYS} days at once")
+    return first, last, today
+
+
+def _view(conn, cfg, client, first, last, today, now, billable_only=True, ask=True):
+    """(blocks, reconciled entries, FlowApp's entries known) for the days first..last.
+
+    With ask=False FlowApp is not asked: what the last preview learnt is used.
+    """
+    blocks = flowapp.collect_blocks(conn, cfg, first, last, billable_only=False)
+    exports = flowapp.load_exports(conn, first, last)
+    if billable_only:                   # stored rows too: a skipped unbilled block stays out of the view
+        exports = flowapp.billable_exports(exports, blocks, cfg)
+        blocks = [b for b in blocks if b.billable]
+    remote = _remote(client, first, last) if ask else _known_remote(client, first, last)
+    items = flowapp.reconcile(blocks, exports, remote, today, now)
+    return blocks, items, remote is not None
+
+
+def flowapp_preview(conn, cfg, client, query, now=None):
+    now = now or time.time()
+    first, last, today = _days(query, now)
+    billable = _one(query, "billable") not in ("0", "false", "no")
+    _, items, remote_ok = _view(conn, cfg, client, first, last, today, now, billable)
+    return {"from": first.isoformat(), "to": last.isoformat(), "today": today.isoformat(), "remote_ok": remote_ok,
+            "days": flowapp.days_json(items, flowapp.titles_of(conn))}
+
+
+def _as_block(it, blocks, exports):
+    """The Block behind a reconciled entry: the stored row's, or the proposal's."""
+    row = exports.get(it["external_id"])
+    if row is not None:
+        return flowapp.block_from_row(row)
+    return next((b for b in blocks if b.external_id == it["external_id"]), None)
+
+
+def flowapp_draft(conn, cfg, client, body, now=None):
+    """Apply one change from the page; the task it belongs to, as the preview shows it."""
+    now = now or time.time()
+    day, ext, action = (str(body.get(k) or "").strip() for k in ("day", "external_id", "action"))
+    try:
+        d = date_of(day)
+    except ValueError:
+        raise ValueError("day is a date, YYYY-MM-DD") from None
+    today = datetime.fromtimestamp(now).date()
+    # Only sending a deleted entry again needs FlowApp's word that it is gone.
+    ask = action == "resend"
+    blocks, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False, ask=ask)
+    it = next((x for x in items if x["external_id"] == ext), None)
+    if it is None:
+        raise LookupError(f"no entry {ext} on {day}")
+    exports = flowapp.load_exports(conn, d, d)
+    proposal = next((b for b in blocks if b.external_id == ext), None)
+    fields = {"external_id": ext}
+    if action == "edit":
+        for name in ("start", "stop"):
+            if name in body:
+                fields[name] = flowapp.parse_edit_time(body[name], day)
+        for name in ("comment", "redmine_id", "export_comment"):
+            if name in body:
+                fields[name] = body[name]
+    elif action == "merge_next":
+        same = sorted((x for x in items if x["key"] == it["key"] and x["status"] not in ("skipped",)),
+                      key=lambda x: (x["start"], x["external_id"]))
+        later = [x for x in same if (x["start"], x["external_id"]) > (it["start"], it["external_id"])]
+        if not later:
+            raise ValueError("there is no next block of this task that day")
+        fields["next"] = _as_block(later[0], blocks, exports)
+    elif action == "resend" and it["status"] != "deleted_remote":
+        raise ValueError("only an entry deleted in FlowApp can be sent again")
+    flowapp.save_draft(conn, proposal, action, fields, now)
+    _, items, _ = _view(conn, cfg, client, d, d, today, now, billable_only=False, ask=False)
+    mine = [x for x in items if x["key"] == it["key"] and x["client"] == it["client"]]
+    return {"ok": True, "task": flowapp.task_json(it["key"], it["client"], flowapp.titles_of(conn).get(it["key"]),
+                                                  mine)}
+
+
+def date_of(text):
+    return datetime.strptime(text, "%Y-%m-%d").date()
+
+
+def flowapp_send(conn, cfg, client, body, now=None):
+    """Start the one send job for the selected entries: (status code, answer)."""
+    global _current_job
+    now = now or time.time()
+    ids = body.get("external_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        return 400, {"error": "external_ids is a non-empty list"}
+    with _flowapp_lock:
+        if _current_job is not None and _current_job.snapshot()["running"]:
+            return 409, {"error": "a send is already running", "job_id": _current_job.id}
+    days = set()
+    for ext in ids:
+        row = conn.execute("SELECT day FROM flowapp_exports WHERE external_id = ?", (ext,)).fetchone()
+        if row is not None:
+            days.add(date_of(row["day"]))
+        else:
+            try:
+                days.add(datetime.fromtimestamp(int(ext.rsplit(":", 1)[1])).date())
+            except (IndexError, ValueError, OverflowError, OSError):
+                pass
+    if not days:
+        return 400, {"error": "none of these entries is known"}
+    first, last = min(days), max(days)
+    today = datetime.fromtimestamp(now).date()
+    blocks = flowapp.collect_blocks(conn, cfg, first, last, billable_only=False)
+    remote = _remote(client, first, last)
+    if remote is None:                  # what FlowApp holds is checked right before sending
+        return 503, {"error": PROBLEMS["unreachable"]}
+    items = flowapp.reconcile(blocks, flowapp.load_exports(conn, first, last), remote, today, now)
+    send, rejected = flowapp.prepare_send(conn, items, ids, now)
+    job = flowapp.SendJob(db.connect, client, send, rejected=rejected)
+    with _flowapp_lock:
+        if _current_job is not None and _current_job.snapshot()["running"]:
+            return 409, {"error": "a send is already running", "job_id": _current_job.id}
+        _flowapp_cache.pop(("entries", client.url), None)
+        _current_job = job
+        _jobs[job.id] = job
+        for old in list(_jobs)[:-10]:
+            del _jobs[old]
+    job.start()
+    return 200, {"job_id": job.id}
+
+
+def flowapp_job(job_id):
+    with _flowapp_lock:
+        return _jobs.get(job_id)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "cc-statusline"
 
@@ -237,7 +525,10 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}")
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
-        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        # Every JSON answer passes here, so this is the one place the FlowApp token is cut out:
+        # FlowApp may repeat it in an error message that ends up in a status, a job or a stored entry.
+        data = body if isinstance(body, bytes) else \
+            flowapp.redact(json.dumps(body, ensure_ascii=False), _known_token()).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -254,6 +545,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         if url.path == "/tasks":
             return self._send(200, TASKS_PAGE.read_bytes(), "text/html; charset=utf-8")
+        if url.path == "/flowapp":
+            if not FLOWAPP_PAGE.exists():
+                return self._send(404, {"error": "not found"})
+            return self._send(200, FLOWAPP_PAGE.read_bytes(), "text/html; charset=utf-8")
+        if url.path.startswith("/api/flowapp/"):
+            return self._flowapp_get(url)
         if url.path in ("/api/tasks", "/api/task"):
             query = parse_qs(url.query)
             cfg = config.load()
@@ -300,7 +597,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok() or self.headers.get("X-CC-Statusline") != "1":
             return self._send(403, {"error": "forbidden"})
         path = urlparse(self.path).path
-        if path not in ("/api/assign", "/api/task/status", "/api/task/move"):
+        if path not in ("/api/assign", "/api/task/status", "/api/task/move") + FLOWAPP_POSTS:
             return self._send(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -309,6 +606,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except ValueError:
             return self._send(400, {"error": "expected a JSON object"})
+        if path in FLOWAPP_POSTS:
+            return self._flowapp_post(path, body)
         if path != "/api/assign":
             return self._task_write(path, body)
         task = str(body.get("task") or "").strip() or None
@@ -331,6 +630,53 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
         return self._send(200, {"ok": True, "session_id": sid, "task": task})
 
+
+    def _flowapp_get(self, url):
+        query = parse_qs(url.query)
+        cfg = config.load()
+        if url.path == "/api/flowapp/status":
+            return self._send(200, flowapp_status(cfg))
+        if url.path == "/api/flowapp/job":
+            job = flowapp_job(_one(query, "id"))
+            if job is None:
+                return self._send(404, {"error": "no such job"})
+            return self._send(200, job.snapshot())
+        if url.path != "/api/flowapp/preview":
+            return self._send(404, {"error": "not found"})
+        client, problem = _flowapp_client(cfg)
+        if client is None:
+            return self._send(409, {"error": PROBLEMS[problem], "problem": problem})
+        conn = db.connect()
+        try:
+            return self._send(200, flowapp_preview(conn, cfg, client, query))
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        finally:
+            conn.close()
+
+    def _flowapp_post(self, path, body):
+        if path == "/api/flowapp/job/cancel":
+            job = flowapp_job(str(body.get("id") or ""))
+            if job is None:
+                return self._send(404, {"error": "no such job"})
+            job.cancel()
+            return self._send(200, {"ok": True})
+        cfg = config.load()
+        client, problem = _flowapp_client(cfg)
+        if client is None:
+            return self._send(409, {"error": PROBLEMS[problem], "problem": problem})
+        conn = db.connect()
+        try:
+            if path == "/api/flowapp/draft":
+                return self._send(200, flowapp_draft(conn, cfg, client, body))
+            code, answer = flowapp_send(conn, cfg, client, body)
+            return self._send(code, answer)
+        except LookupError as e:
+            return self._send(404, {"error": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        finally:
+            conn.close()
 
     def _task_write(self, path, body):
         key = str(body.get("key") or "").strip()

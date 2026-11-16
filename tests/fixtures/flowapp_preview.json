@@ -1,0 +1,372 @@
+{
+ "from": "2026-09-11",
+ "to": "2026-11-16",
+ "today": "2026-11-16",
+ "remote_ok": true,
+ "days": [
+  {
+   "day": "2026-09-11",
+   "log_seconds": 5700,
+   "spent_seconds": 5700,
+   "tracked_seconds": 5500,
+   "rounded_seconds": 5700,
+   "tasks": [
+    {
+     "key": "d24:cms#98",
+     "client": "d24",
+     "title": "Media library pagination",
+     "tracked_seconds": 5500,
+     "rounded_seconds": 5700,
+     "blocks": [
+      {
+       "external_id": "cc:d24:cms#98:1789113600",
+       "day": "2026-09-11",
+       "start": "2026-09-11T10:00:00+02:00",
+       "stop": "2026-09-11T11:35:00+02:00",
+       "tracked_start": "2026-09-11T10:00:00+02:00",
+       "tracked_stop": "2026-09-11T11:31:40+02:00",
+       "tracked_seconds": 5500,
+       "rounding_seconds": 200,
+       "active_seconds": 4730,
+       "comment": "Media library pagination",
+       "redmine_id": "27",
+       "status": "sent",
+       "flags": [
+        "exported"
+       ],
+       "error": null,
+       "flowapp_id": 7731,
+       "export_status": "exported"
+      },
+      {
+       "external_id": "cc:d24:cms#98:1789124700",
+       "day": "2026-09-11",
+       "start": "2026-09-11T13:05:00+02:00",
+       "stop": "2026-09-11T13:45:00+02:00",
+       "tracked_start": "2026-09-11T13:05:00+02:00",
+       "tracked_stop": "2026-09-11T13:41:10+02:00",
+       "tracked_seconds": 2170,
+       "rounding_seconds": 230,
+       "active_seconds": 1866,
+       "comment": "Media library pagination",
+       "redmine_id": "27",
+       "status": "blocked",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "day": "2026-11-14",
+   "log_seconds": 21480,
+   "spent_seconds": 22380,
+   "tracked_seconds": 21932,
+   "rounded_seconds": 22380,
+   "tasks": [
+    {
+     "key": "d24:cms#120",
+     "client": "d24",
+     "title": "Toolbar icons",
+     "tracked_seconds": 16027,
+     "rounded_seconds": 16680,
+     "blocks": [
+      {
+       "external_id": "cc:d24:cms#120:1794643920",
+       "day": "2026-11-14",
+       "start": "2026-11-14T09:12:00+01:00",
+       "stop": "2026-11-14T10:42:00+01:00",
+       "tracked_start": "2026-11-14T09:12:00+01:00",
+       "tracked_stop": "2026-11-14T10:38:12+01:00",
+       "tracked_seconds": 5172,
+       "rounding_seconds": 228,
+       "active_seconds": 4447,
+       "comment": "Toolbar icons",
+       "redmine_id": "31",
+       "status": "new",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      },
+      {
+       "external_id": "cc:d24:cms#120:1794650520",
+       "day": "2026-11-14",
+       "start": "2026-11-14T11:02:00+01:00",
+       "stop": "2026-11-14T11:45:00+01:00",
+       "tracked_start": "2026-11-14T11:02:00+01:00",
+       "tracked_stop": "2026-11-14T11:40:30+01:00",
+       "tracked_seconds": 2310,
+       "rounding_seconds": 270,
+       "active_seconds": 1986,
+       "comment": "Toolbar icons: review fixes",
+       "redmine_id": "31",
+       "status": "draft",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      },
+      {
+       "external_id": "cc:d24:cms#120:1794657600",
+       "day": "2026-11-14",
+       "start": "2026-11-14T13:00:00+01:00",
+       "stop": "2026-11-14T14:00:00+01:00",
+       "tracked_start": "2026-11-14T13:00:00+01:00",
+       "tracked_stop": "2026-11-14T14:12:00+01:00",
+       "tracked_seconds": 4320,
+       "rounding_seconds": -720,
+       "active_seconds": 3715,
+       "comment": "Toolbar icons",
+       "redmine_id": "31",
+       "status": "sent",
+       "flags": [
+        "tracker_changed"
+       ],
+       "error": null,
+       "flowapp_id": 9101,
+       "export_status": "none"
+      },
+      {
+       "external_id": "cc:d24:cms#120:1794663000",
+       "day": "2026-11-14",
+       "start": "2026-11-14T14:30:00+01:00",
+       "stop": "2026-11-14T15:30:00+01:00",
+       "tracked_start": "2026-11-14T14:30:00+01:00",
+       "tracked_stop": "2026-11-14T15:18:20+01:00",
+       "tracked_seconds": 2900,
+       "rounding_seconds": 700,
+       "active_seconds": 2494,
+       "comment": "Toolbar icons",
+       "redmine_id": "31",
+       "status": "changed",
+       "flags": [
+        "exported"
+       ],
+       "error": null,
+       "flowapp_id": 9102,
+       "export_status": "exported"
+      },
+      {
+       "external_id": "cc:d24:cms#120:1794668400",
+       "day": "2026-11-14",
+       "start": "2026-11-14T16:00:00+01:00",
+       "stop": "2026-11-14T16:25:00+01:00",
+       "tracked_start": "2026-11-14T16:00:00+01:00",
+       "tracked_stop": "2026-11-14T16:22:05+01:00",
+       "tracked_seconds": 1325,
+       "rounding_seconds": 175,
+       "active_seconds": 1139,
+       "comment": "Toolbar icons",
+       "redmine_id": "9999",
+       "status": "error",
+       "flags": [],
+       "error": "invalid_request (redmineId): Zadanie Redmine #9999 nie istnieje albo nie masz do niego dostępu.",
+       "flowapp_id": null,
+       "export_status": null
+      }
+     ]
+    },
+    {
+     "key": "d24:cms#118",
+     "client": "d24",
+     "title": "Modal verdict",
+     "tracked_seconds": 4600,
+     "rounded_seconds": 4200,
+     "blocks": [
+      {
+       "external_id": "cc:d24:cms#118:1794641400",
+       "day": "2026-11-14",
+       "start": "2026-11-14T08:30:00+01:00",
+       "stop": "2026-11-14T08:45:00+01:00",
+       "tracked_start": "2026-11-14T08:30:00+01:00",
+       "tracked_stop": "2026-11-14T08:41:00+01:00",
+       "tracked_seconds": 660,
+       "rounding_seconds": 240,
+       "active_seconds": 567,
+       "comment": "Modal verdict",
+       "redmine_id": null,
+       "status": "skipped",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      },
+      {
+       "external_id": "cc:d24:cms#118:1794649500",
+       "day": "2026-11-14",
+       "start": "2026-11-14T10:45:00+01:00",
+       "stop": "2026-11-14T11:30:00+01:00",
+       "tracked_start": "2026-11-14T10:45:00+01:00",
+       "tracked_stop": "2026-11-14T11:28:40+01:00",
+       "tracked_seconds": 2620,
+       "rounding_seconds": 80,
+       "active_seconds": 2253,
+       "comment": "Modal verdict",
+       "redmine_id": null,
+       "status": "deleted_remote",
+       "flags": [],
+       "error": null,
+       "flowapp_id": 9050,
+       "export_status": null
+      },
+      {
+       "external_id": "cc:d24:cms#118:1794654000",
+       "day": "2026-11-14",
+       "start": "2026-11-14T12:00:00+01:00",
+       "stop": "2026-11-14T12:45:00+01:00",
+       "tracked_start": "2026-11-14T12:00:00+01:00",
+       "tracked_stop": "2026-11-14T12:43:10+01:00",
+       "tracked_seconds": 2590,
+       "rounding_seconds": 110,
+       "active_seconds": 2227,
+       "comment": "Modal verdict",
+       "redmine_id": null,
+       "status": "sent",
+       "flags": [
+        "changed_remote"
+       ],
+       "error": null,
+       "flowapp_id": 9051,
+       "export_status": "none"
+      },
+      {
+       "external_id": "cc:d24:cms#118:1794666900",
+       "day": "2026-11-14",
+       "start": "2026-11-14T15:35:00+01:00",
+       "stop": "2026-11-14T16:00:00+01:00",
+       "tracked_start": "2026-11-14T15:35:00+01:00",
+       "tracked_stop": "2026-11-14T16:08:30+01:00",
+       "tracked_seconds": 2010,
+       "rounding_seconds": -510,
+       "active_seconds": 1728,
+       "comment": "Modal verdict",
+       "redmine_id": null,
+       "status": "sent",
+       "flags": [
+        "task_changed",
+        "tracker_changed"
+       ],
+       "error": null,
+       "flowapp_id": 9052,
+       "export_status": "none"
+      }
+     ]
+    },
+    {
+     "key": "d24/shop-frontend",
+     "client": "d24",
+     "title": null,
+     "tracked_seconds": 1305,
+     "rounded_seconds": 1500,
+     "blocks": [
+      {
+       "external_id": "cc:d24/shop-frontend:1794655800",
+       "day": "2026-11-14",
+       "start": "2026-11-14T12:30:00+01:00",
+       "stop": "2026-11-14T12:55:00+01:00",
+       "tracked_start": "2026-11-14T12:30:00+01:00",
+       "tracked_stop": "2026-11-14T12:51:45+01:00",
+       "tracked_seconds": 1305,
+       "rounding_seconds": 195,
+       "active_seconds": 1122,
+       "comment": "d24/shop-frontend",
+       "redmine_id": null,
+       "status": "new",
+       "flags": [
+        "overlaps_sent"
+       ],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "day": "2026-11-16",
+   "log_seconds": 10200,
+   "spent_seconds": 10200,
+   "tracked_seconds": 9745,
+   "rounded_seconds": 10200,
+   "tasks": [
+    {
+     "key": "own:claude#66",
+     "client": "own",
+     "title": "FlowApp export",
+     "tracked_seconds": 8565,
+     "rounded_seconds": 9000,
+     "blocks": [
+      {
+       "external_id": "cc:own:claude#66:1794812700",
+       "day": "2026-11-16",
+       "start": "2026-11-16T08:05:00+01:00",
+       "stop": "2026-11-16T09:50:00+01:00",
+       "tracked_start": "2026-11-16T08:05:00+01:00",
+       "tracked_stop": "2026-11-16T09:46:30+01:00",
+       "tracked_seconds": 6090,
+       "rounding_seconds": 210,
+       "active_seconds": 5237,
+       "comment": "FlowApp export",
+       "redmine_id": null,
+       "status": "today",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      },
+      {
+       "external_id": "cc:own:claude#66:1794820800",
+       "day": "2026-11-16",
+       "start": "2026-11-16T10:20:00+01:00",
+       "stop": "2026-11-16T11:05:00+01:00",
+       "tracked_start": "2026-11-16T10:20:00+01:00",
+       "tracked_stop": "2026-11-16T11:01:15+01:00",
+       "tracked_seconds": 2475,
+       "rounding_seconds": 225,
+       "active_seconds": 2128,
+       "comment": "FlowApp export",
+       "redmine_id": null,
+       "status": "today",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      }
+     ]
+    },
+    {
+     "key": "d24:cms#120",
+     "client": "d24",
+     "title": "Toolbar icons",
+     "tracked_seconds": 1180,
+     "rounded_seconds": 1200,
+     "blocks": [
+      {
+       "external_id": "cc:d24:cms#120:1794826800",
+       "day": "2026-11-16",
+       "start": "2026-11-16T12:00:00+01:00",
+       "stop": "2026-11-16T12:20:00+01:00",
+       "tracked_start": "2026-11-16T12:00:00+01:00",
+       "tracked_stop": "2026-11-16T12:19:40+01:00",
+       "tracked_seconds": 1180,
+       "rounding_seconds": 20,
+       "active_seconds": 1014,
+       "comment": "Toolbar icons",
+       "redmine_id": "31",
+       "status": "today",
+       "flags": [],
+       "error": null,
+       "flowapp_id": null,
+       "export_status": null
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

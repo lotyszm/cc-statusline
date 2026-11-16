@@ -37,3 +37,8 @@ def status_dir():
 
 def log_path():
     return data_dir() / "hook.log"
+
+
+def flowapp_token_path():
+    """The FlowApp API token, next to config.toml; read only when private (0600)."""
+    return config_path().parent / "flowapp-token"
