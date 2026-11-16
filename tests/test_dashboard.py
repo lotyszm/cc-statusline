@@ -519,6 +519,22 @@ class FlowappEndpointTest(ServedTestCase):
                          (34 * 60, 35 * 60, 35 * 60, 35 * 60))
         self.assertTrue(block["start"].startswith(f"{self.day}T10:00:00+0"))
 
+    def test_seconds_are_whole_numbers(self):
+        def seconds(value, path=""):
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    yield from seconds(v, f"{path}.{k}")
+                    if k.endswith("_seconds"):
+                        yield f"{path}.{k}", v
+            elif isinstance(value, list):
+                for i, v in enumerate(value):
+                    yield from seconds(v, f"{path}[{i}]")
+        self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "skip"})
+        self.post("/api/flowapp/draft", {"day": self.day, "external_id": self.ext, "action": "unskip"})
+        found = list(seconds(self.preview()))
+        self.assertGreater(len(found), 5)
+        self.assertEqual([(p, v) for p, v in found if type(v) is not int], [])
+
     @unittest.skipUnless(os.path.exists(FLOWAPP_FIXTURE), "the page's fixture comes with the page")
     def test_preview_matches_the_page_fixture(self):
         with open(FLOWAPP_FIXTURE, encoding="utf-8") as f:

@@ -859,10 +859,17 @@ BLOCK_FIELDS = ("external_id", "day", "start", "stop", "tracked_start", "tracked
                 "comment", "redmine_id", "status", "flags", "error", "flowapp_id", "export_status")
 
 
+def _secs(value):
+    """Seconds as the page gets them: a whole number."""
+    return int(round(value or 0))
+
+
 def _block_json(it):
     out = {f: it[f] for f in BLOCK_FIELDS}
     for f in ("start", "stop", "tracked_start", "tracked_stop"):
         out[f] = iso(it[f])
+    for f in ("tracked_seconds", "active_seconds"):
+        out[f] = _secs(it[f])
     return out
 
 
@@ -875,7 +882,8 @@ def _sums(items):
 def task_json(key, client, title, items):
     """A task row of the page: its blocks in time order and what they add up to."""
     tracked, rounded, _ = _sums(items)
-    return {"key": key, "client": client, "title": title, "tracked_seconds": tracked, "rounded_seconds": rounded,
+    return {"key": key, "client": client, "title": title, "tracked_seconds": _secs(tracked),
+            "rounded_seconds": _secs(rounded),
             "blocks": [_block_json(it) for it in sorted(items, key=lambda it: (it["start"], it["external_id"]))]}
 
 
@@ -898,8 +906,8 @@ def days_json(items, titles):
         log = sum(e - s for s, e in _union_spans([(it["start"], it["stop"]) for it in counted]))
         tasks = [task_json(k, c, titles.get(k), g) for (k, c), g in
                  sorted(groups.items(), key=lambda kv: (min(it["start"] for it in kv[1]), kv[0][0]))]
-        days.append({"day": day, "log_seconds": log, "spent_seconds": rounded, "tracked_seconds": tracked,
-                     "rounded_seconds": rounded, "tasks": tasks})
+        days.append({"day": day, "log_seconds": _secs(log), "spent_seconds": _secs(rounded),
+                     "tracked_seconds": _secs(tracked), "rounded_seconds": _secs(rounded), "tasks": tasks})
     return days
 
 
