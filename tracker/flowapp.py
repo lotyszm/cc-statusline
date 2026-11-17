@@ -644,6 +644,23 @@ def _unwrap(data):
     return data
 
 
+def redirect_message(base, location):
+    """What a 3xx answer is reported as: the host it pointed to, never a path, query or password."""
+    try:
+        parts = urllib.parse.urlsplit(urllib.parse.urljoin(base, location or ""))
+        host = parts.hostname and (f"{parts.hostname}:{parts.port}" if parts.port else parts.hostname)
+    except ValueError:
+        host = None
+    return f"redirected to {host or 'another address'}; set the final URL in config"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is not followed: urllib would resend the Authorization header to wherever it points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Client:
     """FlowApp API v1 over urllib. The token goes only into the Authorization header."""
 
@@ -662,11 +679,13 @@ class Client:
             "Authorization": f"Bearer {self._token}", "Accept": "application/json",
             **({"Content-Type": "application/json"} if data is not None else {})})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.build_opener(_NoRedirect).open(req, timeout=self.timeout) as r:
                 raw = r.read()
                 return r.status, r.headers, json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             try:
+                if 300 <= e.code < 400:
+                    raise ApiError(e.code, "redirected", redirect_message(url, e.headers.get("Location"))) from None
                 raise self._error(e) from None
             finally:
                 e.close()

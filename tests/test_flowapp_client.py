@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from tracker import db, flowapp
-from tests.helpers import IsolatedTestCase, local_ts
+from tests.helpers import IsolatedTestCase, Redirector, local_ts
 from tests.test_flowapp_blocks import build, span
 from tests.test_flowapp_reconcile import utc
 
@@ -164,6 +164,24 @@ class ClientTest(IsolatedTestCase):
         with self.assertRaises(flowapp.ApiError) as cm:
             self.client.create({"comment": "x"})
         self.assertEqual((cm.exception.code, cm.exception.field), ("invalid_request", "redmineId"))
+
+    def test_a_redirect_is_an_error_and_the_token_does_not_follow_it(self):
+        port = urlparse(self.fake.url).port
+        for status in (301, 302, 307, 308):
+            with self.subTest(status=status):
+                hop = Redirector(f"http://localhost:{port}", status)
+                try:
+                    client = flowapp.Client(hop.url, TOKEN, timeout=5)
+                    for call in (client.me, lambda: client.create({"comment": "x", "externalId": "cc:a:1"})):
+                        with self.assertRaises(flowapp.ApiError) as cm:
+                            call()
+                        self.assertEqual((cm.exception.status, cm.exception.code, cm.exception.message),
+                                         (status, "redirected",
+                                          f"redirected to localhost:{port}; set the final URL in config"))
+                finally:
+                    hop.close()
+                self.assertEqual(len(hop.requests), 2)
+        self.assertEqual(self.fake.requests, [])     # the token never reached the other host
 
 
 class SendJobTest(IsolatedTestCase):
